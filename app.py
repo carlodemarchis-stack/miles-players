@@ -1628,40 +1628,25 @@ def _auto_assign_formation(formation, players):
 
 
 def _render_pitch(formation, assignments):
-    """Render a football pitch with player positions using HTML/CSS."""
+    """Render a football pitch with player positions — same style as squad map."""
     parts = []
-    # Realistic pitch with mowed stripes, markings, and subtle texture
+    # Dark pitch with stripes
     parts.append(
-        '<div style="position:relative;width:100%;max-width:500px;margin:0 auto;'
-        'aspect-ratio:68/105;'
+        '<div style="position:relative;width:100%;max-width:700px;'
+        'aspect-ratio:68/84;'
         'background:repeating-linear-gradient(to bottom,'
-        '#2e8b47 0%,#2e8b47 8.33%,#348c4e 8.33%,#348c4e 16.66%);'
-        'border:3px solid rgba(255,255,255,0.8);border-radius:8px;overflow:hidden;'
-        'box-shadow:inset 0 0 30px rgba(0,0,0,0.15),0 4px 12px rgba(0,0,0,0.3);">'
+        '#1a6b35 0%,#1a6b35 8.33%,#1f7a3d 8.33%,#1f7a3d 16.66%);'
+        'border:3px solid rgba(255,255,255,0.6);border-radius:8px;overflow:hidden;'
+        'box-shadow:inset 0 0 40px rgba(0,0,0,0.3),0 4px 12px rgba(0,0,0,0.3);">'
     )
-    # Halfway line
+    # Pitch markings
     parts.append('<div style="position:absolute;top:50%;left:5%;right:5%;height:2px;background:rgba(255,255,255,0.7);"></div>')
-    # Center circle
     parts.append('<div style="position:absolute;top:50%;left:50%;width:70px;height:70px;border:2px solid rgba(255,255,255,0.7);border-radius:50%;transform:translate(-50%,-50%);"></div>')
-    # Center spot
     parts.append('<div style="position:absolute;top:50%;left:50%;width:6px;height:6px;background:rgba(255,255,255,0.7);border-radius:50%;transform:translate(-50%,-50%);"></div>')
-    # Top penalty area
     parts.append('<div style="position:absolute;top:0;left:22%;right:22%;height:14%;border:2px solid rgba(255,255,255,0.7);border-top:none;"></div>')
-    # Top goal area
     parts.append('<div style="position:absolute;top:0;left:34%;right:34%;height:7%;border:2px solid rgba(255,255,255,0.7);border-top:none;"></div>')
-    # Top penalty arc
-    parts.append('<div style="position:absolute;top:11%;left:50%;width:40px;height:40px;border:2px solid rgba(255,255,255,0.7);border-radius:50%;transform:translate(-50%,-50%);clip-path:inset(50% 0 0 0);"></div>')
-    # Bottom penalty area
     parts.append('<div style="position:absolute;bottom:0;left:22%;right:22%;height:14%;border:2px solid rgba(255,255,255,0.7);border-bottom:none;"></div>')
-    # Bottom goal area
     parts.append('<div style="position:absolute;bottom:0;left:34%;right:34%;height:7%;border:2px solid rgba(255,255,255,0.7);border-bottom:none;"></div>')
-    # Bottom penalty arc
-    parts.append('<div style="position:absolute;bottom:11%;left:50%;width:40px;height:40px;border:2px solid rgba(255,255,255,0.7);border-radius:50%;transform:translate(-50%,-50%);clip-path:inset(0 0 50% 0);"></div>')
-    # Corner arcs
-    parts.append('<div style="position:absolute;top:-5px;left:-5px;width:16px;height:16px;border:2px solid rgba(255,255,255,0.7);border-radius:50%;"></div>')
-    parts.append('<div style="position:absolute;top:-5px;right:-5px;width:16px;height:16px;border:2px solid rgba(255,255,255,0.7);border-radius:50%;"></div>')
-    parts.append('<div style="position:absolute;bottom:-5px;left:-5px;width:16px;height:16px;border:2px solid rgba(255,255,255,0.7);border-radius:50%;"></div>')
-    parts.append('<div style="position:absolute;bottom:-5px;right:-5px;width:16px;height:16px;border:2px solid rgba(255,255,255,0.7);border-radius:50%;"></div>')
 
     for slot, player in assignments:
         x = slot["x"]
@@ -1671,7 +1656,7 @@ def _render_pitch(formation, assignments):
         verdict = player.get("verdict", "") if player else ""
         verdict_emoji = verdict.split(" ")[0] if verdict else ""
         compat = _slot_compatibility(slot["role"], player.get("position")) if player else "mismatch"
-        card_bg = _COMPAT_COLORS[compat]
+        compat_border = _COMPAT_COLORS[compat]
         opacity = "1" if player else "0.6"
         photo = player.get("photo_url", "") if player else ""
         age = str(player.get("age", "")) if player else ""
@@ -1680,28 +1665,28 @@ def _render_pitch(formation, assignments):
 
         if photo:
             img_html = (
-                '<img src="{photo}" style="width:44px;height:44px;border-radius:50%;'
-                'border:3px solid white;object-fit:cover;display:block;margin:0 auto;"/>'
-            ).format(photo=photo)
+                '<img src="{photo}" style="width:42px;height:42px;border-radius:50%;'
+                'border:2px solid {bc};object-fit:cover;display:block;margin:0 auto;"/>'
+            ).format(photo=photo, bc=compat_border)
         else:
             img_html = (
-                '<div style="width:44px;height:44px;background:#555;border-radius:50%;'
-                'border:3px solid white;display:flex;align-items:center;justify-content:center;'
+                '<div style="width:42px;height:42px;background:#555;border-radius:50%;'
+                'border:2px solid {bc};display:flex;align-items:center;justify-content:center;'
                 'font-size:11px;color:white;font-weight:bold;margin:0 auto;">?</div>'
-            )
+            ).format(bc=compat_border)
 
         parts.append(
             '<div style="position:absolute;left:{x}%;top:{y}%;transform:translate(-50%,-50%);opacity:{op};">'
-            '<div style="background:{cbg};border-radius:8px;padding:3px 5px 4px;text-align:center;'
-            'box-shadow:0 2px 6px rgba(0,0,0,0.4);min-width:60px;">'
-            '<div style="font-size:8px;color:white;font-weight:700;letter-spacing:0.5px;margin-bottom:2px;">{sn}</div>'
+            '<div style="background:rgba(0,0,0,0.75);border-radius:8px;padding:3px 6px 4px;'
+            'text-align:center;min-width:55px;box-shadow:0 1px 4px rgba(0,0,0,0.5);">'
+            '<div style="font-size:9px;color:#aaa;font-weight:700;letter-spacing:0.5px;">{sn}</div>'
             '{img}'
-            '<div style="font-size:9px;color:white;font-weight:700;margin-top:2px;white-space:nowrap;">{nm}</div>'
-            '<div style="font-size:7px;color:rgba(255,255,255,0.85);white-space:nowrap;">'
+            '<div style="font-size:10px;color:white;font-weight:700;margin-top:2px;white-space:nowrap;">{nm}</div>'
+            '<div style="font-size:8px;color:#ccc;white-space:nowrap;">'
             '{age}{sep1}{ss} {ve}</div>'
-            '<div style="font-size:7px;color:rgba(255,255,255,0.75);">{mv}</div>'
+            '<div style="font-size:8px;color:#999;">{mv}</div>'
             '</div></div>'.format(
-                x=x, y=y, op=opacity, cbg=card_bg, img=img_html,
+                x=x, y=y, op=opacity, img=img_html,
                 sn=slot["slot"], nm=surname,
                 age=age, sep1=" · " if age and ss else "",
                 ss=ss, ve=extra, mv=mv,
