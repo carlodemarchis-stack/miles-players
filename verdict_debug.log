@@ -1,0 +1,90 @@
+Error: Expecting property name enclosed in double quotes: line 77 column 4 (char 2592)
+
+Raw text:
+[
+  {
+    "name": "Lamine Yamal",
+    "verdict": "🔒 Lock Him In",
+    "reason": "Stella assoluta a 18 anni con 21 gol e 16 assist, il futuro del calcio mondiale."
+  },
+  {
+    "name": "Khvicha Kvaratskhelia",
+    "verdict": "🔒 Lock Him In",
+    "reason": "Ala sinistra di classe mondiale con 12 gol e 8 assist, fondamentale per l'attacco."
+  },
+  {
+    "name": "Warren Zaïre-Emery",
+    "verdict": "🔒 Lock Him In",
+    "reason": "Talento puro del PSG a 20 anni, centrocampista del futuro con grande margine di crescita."
+  },
+  {
+    "name": "Nico Paz",
+    "verdict": "🔒 Lock Him In",
+    "reason": "Trequartista eccezionale con 11 gol e 6 assist, perfetto per collegare centrocampo e attacco."
+  },
+  {
+    "name": "Endrick",
+    "verdict": "💪 Keep & Build Around",
+    "reason": "Centravanti brasiliano di 19 anni con 6 gol in 18 partite, investimento per il futuro."
+  },
+  {
+    "name": "António Silva",
+    "verdict": "💪 Keep & Build Around",
+    "reason": "Difensore centrale giovane e affidabile del Benfica, pilastro della difesa."
+  },
+  {
+    "name": "Bart Verbruggen",
+    "verdict": "💪 Keep & Build Around",
+    "reason": "Portiere titolare di 23 anni con buone prestazioni, futuro numero uno della squadra."
+  },
+  {
+    "name": "Theo Hernández",
+    "verdict": "💪 Keep & Build Around",
+    "reason": "Terzino sinistro offensivo con 8 gol e 3 assist, esperienza e qualità garantite."
+  },
+  {
+    "name": "Alessandro Buongiorno",
+    "verdict": "🤔 Hold For Now",
+    "reason": "Difensore centrale solido ma con prestazioni standard, utile per la rotazione."
+  },
+  {
+    "name": "Martin Baturina",
+    "verdict": "🤔 Hold For Now",
+    "reason": "Trequartista promettente con 7 gol e 4 assist, buona alternativa a Nico Paz."
+  },
+  {
+    "name": "Samuele Ricci",
+    "verdict": "🤔 Hold For Now",
+    "reason": "Mediano giovane con potenziale ma prestazioni sottotono, da monitorare."
+  },
+  {
+    "name": "Marco Palestra",
+    "verdict": "🤔 Hold For Now",
+    "reason": "Terzino destro giovane ma con rating 7.04, serve crescita per giustificare i 30M spesi."
+  },
+  {
+    "name": "Adrien Rabiot",
+    "verdict": "⚠️ Consider Selling",
+    "reason": "A 31 anni può essere sostituito con un profilo più giovane e prospettico."
+  },
+  {
+    "name": "Cesare Casadei",
+    "verdict": "⚠️ Consider Selling",
+    "reason": "Centrocampista con rating basso (6.77) e prestazioni insufficienti per questo livello."
+  },
+  {
+    "name": "Nicolò Savona",
+    "verdict": "⚠️ Consider Selling",
+    "reason": "Terzino con rating 6.6 troppo basso, serve upgrade per la fascia destra."
+  },
+  {
+Traceback (most recent call last):
+  File "/Users/carlodemarchis/Downloads/miles-players/app.py", line 1253, in _generate_and_save_verdicts
+    verdicts = json.loads(text)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/json/__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/json/decoder.py", line 353, in raw_decode
+    obj, end = self.scan_once(s, idx)
+json.decoder.JSONDecodeError: Expecting property name enclosed in double quotes: line 77 column 4 (char 2592)

@@ -1,0 +1,5 @@
+streamlit>=1.38
+supabase>=2.0
+beautifulsoup4>=4.12
+anthropic>=0.30
+extra-streamlit-components>=0.1.60
