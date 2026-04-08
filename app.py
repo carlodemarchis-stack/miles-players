@@ -2009,19 +2009,28 @@ def chatgpt_tab(players):
     st.caption("Ask ChatGPT about your squad — opens in a new tab with your team data pre-filled.")
 
     budget_info = storage.compute_budget(_current_user_id())
-    squad_text = _build_squad_summary(players, budget_info)
 
-    # Build the context prefix
     profile = storage.get_profile(_current_user_id())
     user_name = profile.get("first_name") or profile.get("nickname") or "the user"
     lang = _get_analysis_lang()
-    lang_note = " Respond in Italian." if lang == "Italiano" else ""
+    lang_note = " Reply in Italian." if lang == "Italiano" else ""
+
+    # Compact squad for URL (keep under 2000 chars)
+    lines = []
+    for p in players:
+        pos = SHORT_POS.get(p.get("position", ""), "?")
+        name = p.get("name", "?")
+        age = p.get("age", "?")
+        mv = p.get("market_value", "?")
+        ss = p.get("sofascore_rating", "")
+        lines.append("{} {} {}y {} ss{}".format(pos, name, age, mv, ss))
+    squad_compact = "; ".join(lines)
+    cash = _fmt_m(budget_info["cash"])
 
     context = (
-        "You are a football scout. "
-        "I am {name}, managing a fantasy football squad.{lang}\n\n"
-        "My squad:\n{squad}\n\n"
-    ).format(name=user_name, lang=lang_note, squad=squad_text)
+        "Football scout help.{lang} "
+        "I have {cash} cash, {n}/22 players: {squad}. "
+    ).format(lang=lang_note, cash=cash, n=len(players), squad=squad_compact)
 
     # User question
     user_q = st.text_input(
@@ -2048,11 +2057,16 @@ def chatgpt_tab(players):
         encoded = urllib.parse.quote(full_prompt, safe="")
         url = "https://chatgpt.com/?q={}".format(encoded)
 
-        # Check URL length — ChatGPT has limits
-        if len(url) > 8000:
-            # Shorten squad data
-            short_squad = "\n".join(squad_text.split("\n")[:20])
-            full_prompt = context.replace(squad_text, short_squad + "\n...") + "My question: " + user_q
+        # Trim if still too long for browser
+        if len(url) > 4000:
+            # Keep only first 15 players
+            short_lines = lines[:15]
+            short_squad = "; ".join(short_lines) + "..."
+            short_context = (
+                "Football scout help.{lang} "
+                "I have {cash} cash, {n}/22 players: {squad}. "
+            ).format(lang=lang_note, cash=cash, n=len(players), squad=short_squad)
+            full_prompt = short_context + "Q: " + user_q
             encoded = urllib.parse.quote(full_prompt, safe="")
             url = "https://chatgpt.com/?q={}".format(encoded)
 
