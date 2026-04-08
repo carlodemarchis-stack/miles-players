@@ -1,5 +1,5 @@
-streamlit>=1.38
+streamlit>=1.42
 supabase>=2.0
 beautifulsoup4>=4.12
 anthropic>=0.30
-extra-streamlit-components>=0.1.60
+Authlib==1.3.2

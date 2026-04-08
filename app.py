@@ -2415,8 +2415,8 @@ def main():
                 st.rerun()
             st.divider()
             if st.button("🚪 Sign out", use_container_width=True, key="signout_btn"):
-                st.session_state["do_sign_out"] = True
-                st.rerun()
+                from auth import _clear_session
+                _clear_session()
 
     players = st.session_state.players
 

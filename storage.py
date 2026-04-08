@@ -52,11 +52,12 @@ def _use_local() -> bool:
 
 
 def _supabase_client():
-    """Create a fresh Supabase client each call — avoids stale HTTP/2 connections."""
+    """Create Supabase client. Uses service_role key if available (bypasses RLS)."""
     if "sb_client" not in st.session_state:
         from supabase import create_client
         url = st.secrets["supabase"]["url"]
-        key = st.secrets["supabase"]["anon_key"]
+        # Prefer service_role key (bypasses RLS — we filter by user_id in code)
+        key = st.secrets["supabase"].get("service_role_key") or st.secrets["supabase"]["anon_key"]
         st.session_state["sb_client"] = create_client(url, key)
     return st.session_state["sb_client"]
 
@@ -80,14 +81,9 @@ def _safe_execute(query_fn):
         raise
 
 
-def set_auth(access_token: str, refresh_token: str):
-    """Attach the current user's JWT to the Supabase client so RLS kicks in."""
-    client = _supabase_client()
-    client.postgrest.auth(access_token)
-    try:
-        client.auth.set_session(access_token, refresh_token)
-    except Exception:
-        pass
+def set_auth(access_token=None, refresh_token=None):
+    """No-op — kept for compatibility. Auth is handled by Streamlit native OAuth."""
+    pass
 
 
 # --------------------------------------------------------------------------- #
@@ -347,6 +343,26 @@ def profile_exists(user_id: str) -> bool:
 # --------------------------------------------------------------------------- #
 # Profile                                                                     #
 # --------------------------------------------------------------------------- #
+
+def get_profile_by_email(email: str) -> dict:
+    """Look up profile by email. Returns profile dict or empty dict."""
+    if _use_local():
+        return {}
+    def _q():
+        client = _supabase_client()
+        return (
+            client.table("user_profiles")
+            .select("*")
+            .eq("email", email.lower().strip())
+            .maybe_single()
+            .execute()
+        )
+    try:
+        res = _safe_execute(_q)
+        return res.data if res and res.data else {}
+    except Exception:
+        return {}
+
 
 def get_profile(user_id: str) -> dict:
     """Return full user profile dict."""
