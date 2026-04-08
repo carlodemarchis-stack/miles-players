@@ -217,6 +217,12 @@ def search_player(name: str) -> List[dict]:
         value = _text(cells[8]) if len(cells) > 8 else ""
         club_img = row.select_one("img.tiny_wappen")
         club = club_img.get("alt", "") if club_img else ""
+        # Skip retired/no-value players
+        club_lower = club.lower().strip()
+        if club_lower in ("retired", "career break", "without club", ""):
+            continue
+        if not value or value.strip() in ("-", "€0"):
+            continue
         results.append(
             {
                 "name": _text(link),

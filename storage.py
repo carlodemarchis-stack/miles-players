@@ -51,13 +51,33 @@ def _use_local() -> bool:
         return True  # no secrets file -> dev mode
 
 
-@st.cache_resource
 def _supabase_client():
-    from supabase import create_client
+    """Create a fresh Supabase client each call — avoids stale HTTP/2 connections."""
+    if "sb_client" not in st.session_state:
+        from supabase import create_client
+        url = st.secrets["supabase"]["url"]
+        key = st.secrets["supabase"]["anon_key"]
+        st.session_state["sb_client"] = create_client(url, key)
+    return st.session_state["sb_client"]
 
-    url = st.secrets["supabase"]["url"]
-    key = st.secrets["supabase"]["anon_key"]
-    return create_client(url, key)
+
+def _reset_client():
+    """Clear cached client so a fresh one is created on next call."""
+    st.session_state.pop("sb_client", None)
+
+
+def _safe_execute(query_fn):
+    """Execute a Supabase query, retry once on stale connection errors."""
+    try:
+        return query_fn()
+    except KeyError:
+        _reset_client()
+        return query_fn()
+    except Exception as e:
+        if "stream" in str(e).lower() or "connection" in str(e).lower():
+            _reset_client()
+            return query_fn()
+        raise
 
 
 def set_auth(access_token: str, refresh_token: str):
@@ -114,8 +134,10 @@ def _next_id(items) -> int:
 def list_players(user_id: str) -> List[dict]:
     if _use_local():
         return _local_user_block(user_id)["users"][user_id]["players"]
-    client = _supabase_client()
-    res = client.table("players").select("*").eq("user_id", user_id).order("id").execute()
+    def _q():
+        client = _supabase_client()
+        return client.table("players").select("*").eq("user_id", user_id).order("id").execute()
+    res = _safe_execute(_q)
     return res.data or []
 
 
@@ -189,14 +211,16 @@ def list_transactions(user_id: str) -> List[dict]:
         return list(
             reversed(_local_user_block(user_id)["users"][user_id]["transactions"])
         )
-    client = _supabase_client()
-    res = (
-        client.table("transactions")
-        .select("*")
-        .eq("user_id", user_id)
-        .order("created_at", desc=True)
-        .execute()
-    )
+    def _q():
+        client = _supabase_client()
+        return (
+            client.table("transactions")
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+    res = _safe_execute(_q)
     return res.data or []
 
 
@@ -354,7 +378,7 @@ def update_profile(user_id: str, fields: dict) -> dict:
     """Update profile fields (first_name, last_name, nickname)."""
     allowed = {
         "first_name", "last_name", "nickname", "team_name", "year_of_birth",
-        "selected_formation", "formation_overrides",
+        "selected_formation", "formation_overrides", "is_premium",
     }
     payload = {k: v for k, v in fields.items() if k in allowed}
     if not payload:
@@ -367,6 +391,35 @@ def update_profile(user_id: str, fields: dict) -> dict:
     client = _supabase_client()
     client.table("user_profiles").update(payload).eq("user_id", user_id).execute()
     return get_profile(user_id)
+
+
+def list_all_profiles() -> List[dict]:
+    """Admin: list all user profiles."""
+    if _use_local():
+        return []
+    def _q():
+        client = _supabase_client()
+        return client.rpc("get_all_profiles").execute()
+    res = _safe_execute(_q)
+    return res.data or []
+
+
+def admin_update_profile(user_id: str, fields: dict) -> dict:
+    """Admin: update any user's profile fields."""
+    allowed = {"is_admin", "is_premium", "first_name", "last_name", "nickname", "team_name"}
+    payload = {k: v for k, v in fields.items() if k in allowed}
+    if not payload:
+        return {}
+    if _use_local():
+        return {}
+    client = _supabase_client()
+    client.table("user_profiles").update(payload).eq("user_id", user_id).execute()
+    return payload
+
+
+def is_premium(user_id: str) -> bool:
+    profile = get_profile(user_id)
+    return bool(profile.get("is_premium", False))
 
 
 def is_admin(user_id: str) -> bool:

@@ -569,9 +569,14 @@ def transfermarkt_search_bar():
         hc[5].markdown("<small><b>Owners</b></small>", unsafe_allow_html=True)
         hc[6].markdown("<small><b>TM</b></small>", unsafe_allow_html=True)
 
+        # Sort: players with value first, then without
+        unique.sort(key=lambda r: (0 if r.get("value") else 1, r.get("name", "")))
+
         for i, r in enumerate(unique[:8]):
             club = r.get("club", "")
+            value = r.get("value", "").strip()
             is_retired = club.lower() in ("retired", "career break", "without club", "")
+            has_no_value = not value or value == "-" or value == "€0"
             rc = st.columns([2.5, 2, 1, 0.8, 1.2, 1.5, 0.4])
             rc[1].write(club)
             rc[2].write(r.get("position", ""))
@@ -583,8 +588,13 @@ def transfermarkt_search_bar():
                 "<a href='{}' target='_blank'>🔗</a>".format(r["url"]),
                 unsafe_allow_html=True,
             )
-            if is_retired:
-                rc[0].caption("~~{}~~ (retired)".format(r["name"]))
+            if is_retired or has_no_value:
+                label = r["name"]
+                if is_retired:
+                    label += " (retired)"
+                elif has_no_value:
+                    label += " (no value)"
+                rc[0].caption("~~{}~~".format(label))
                 continue
             if rc[0].button(r["name"], key="pick_{}".format(i), use_container_width=True):
                 try:
@@ -830,6 +840,8 @@ def player_detail_dialog(p):
             line3.append("🔁 loan from **{}**".format(p["on_loan_from"]))
         if p.get("tm_url"):
             line3.append("[🔗 Transfermarkt]({})".format(p["tm_url"]))
+        if p.get("sofascore_id"):
+            line3.append("[📈 SofaScore](https://www.sofascore.com/player/{})".format(p["sofascore_id"]))
         if line3:
             st.caption(" · ".join(line3))
 
@@ -2032,15 +2044,7 @@ def chatgpt_tab(players):
         "I have {cash} cash, {n}/22 players: {squad}. "
     ).format(lang=lang_note, cash=cash, n=len(players), squad=squad_compact)
 
-    # User question
-    user_q = st.text_input(
-        "Your question",
-        placeholder="e.g. Who should I buy next? How can I improve my midfield?",
-        key="gpt_question",
-    )
-
-    # Preset questions
-    st.caption("Or pick a quick question:")
+    # Handle preset click → store in session and rerun
     presets = [
         "Analyze my squad strengths and weaknesses",
         "Suggest 3 players I should buy next",
@@ -2048,25 +2052,30 @@ def chatgpt_tab(players):
         "Rate my squad out of 10 with explanation",
         "Suggest the best formation for my squad",
     ]
-    for i, preset in enumerate(presets):
-        if st.button(preset, key="gpt_preset_{}".format(i), use_container_width=True):
-            user_q = preset
+
+    # If a preset was clicked last run, pre-fill the input
+    if st.session_state.get("gpt_preset_selected"):
+        st.session_state["gpt_question"] = st.session_state.pop("gpt_preset_selected")
+
+    user_q = st.text_input(
+        "Your question",
+        placeholder="e.g. Who should I buy next? How can I improve my midfield?",
+        key="gpt_question",
+    )
 
     if user_q:
-        full_prompt = context + "My question: " + user_q
+        # Question is set — show the link, hide presets
+        full_prompt = context + "\n\n" + user_q
         encoded = urllib.parse.quote(full_prompt, safe="")
         url = "https://chatgpt.com/?q={}".format(encoded)
 
-        # Trim if still too long for browser
         if len(url) > 4000:
-            # Keep only first 15 players
-            short_lines = lines[:15]
-            short_squad = "; ".join(short_lines) + "..."
+            short_squad = "; ".join(lines[:15]) + "..."
             short_context = (
                 "Football scout help.{lang} "
                 "I have {cash} cash, {n}/22 players: {squad}. "
             ).format(lang=lang_note, cash=cash, n=len(players), squad=short_squad)
-            full_prompt = short_context + "Q: " + user_q
+            full_prompt = short_context + "\n\n" + user_q
             encoded = urllib.parse.quote(full_prompt, safe="")
             url = "https://chatgpt.com/?q={}".format(encoded)
 
@@ -2075,7 +2084,14 @@ def chatgpt_tab(players):
             url,
             use_container_width=True,
         )
-        st.caption("Click to open ChatGPT with your squad data and question pre-filled.")
+        st.caption("Opens ChatGPT with your squad data and question pre-filled.")
+    else:
+        # No question yet — show presets
+        st.caption("Pick a question or type your own:")
+        for i, preset in enumerate(presets):
+            if st.button(preset, key="gpt_preset_{}".format(i), use_container_width=True):
+                st.session_state["gpt_preset_selected"] = preset
+                st.rerun()
 
 
 # --------------------------------------------------------------------------- #
@@ -2237,6 +2253,42 @@ def settings_dialog():
         st.rerun()
 
 
+@st.dialog("Manage Users", width="large")
+def manage_users_dialog():
+    profiles = storage.list_all_profiles()
+    if not profiles:
+        st.info("No users found or function not available.")
+        return
+
+    for p in profiles:
+        uid = p.get("user_id", "")
+        email = p.get("email", "?")
+        name = p.get("nickname") or "{} {}".format(
+            p.get("first_name", ""), p.get("last_name", "")
+        ).strip() or email
+        team = p.get("team_name", "")
+        is_adm = p.get("is_admin", False)
+        is_prem = p.get("is_premium", False)
+
+        with st.container(border=True):
+            c1, c2, c3, c4 = st.columns([3, 2, 1, 1])
+            c1.markdown("**{}**".format(name))
+            c1.caption("{} · {}".format(email, team or "no team"))
+            new_admin = c2.checkbox(
+                "Admin", value=bool(is_adm), key="adm_{}".format(uid)
+            )
+            new_premium = c3.checkbox(
+                "Premium", value=bool(is_prem), key="prem_{}".format(uid)
+            )
+            if c4.button("💾", key="save_u_{}".format(uid)):
+                storage.admin_update_profile(uid, {
+                    "is_admin": new_admin,
+                    "is_premium": new_premium,
+                })
+                st.success("Updated {}".format(name))
+                st.rerun()
+
+
 @st.dialog("Danger Zone")
 def danger_zone_dialog():
     st.warning(
@@ -2352,6 +2404,9 @@ def main():
                 if st.button("⚙️ App Settings", use_container_width=True, key="open_settings"):
                     st.session_state["show_settings_dialog"] = True
                     st.rerun()
+                if st.button("👥 Manage Users", use_container_width=True, key="open_users"):
+                    st.session_state["show_users_dialog"] = True
+                    st.rerun()
                 if st.button("⚠️ Danger Zone", use_container_width=True, key="open_danger"):
                     st.session_state["show_danger_dialog"] = True
                     st.rerun()
@@ -2450,8 +2505,13 @@ def main():
     st.divider()
 
     # --- Tabs (persist selection via query params) ---
-    _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "📊 Transactions", "📋 Analysis", "🤖 Ask Claude", "💬 Ask ChatGPT", "📝 Notes"]
-    _TAB_KEYS = ["squad", "map", "tactics", "transactions", "analysis", "ask", "chatgpt", "notes"]
+    user_premium = storage.is_premium(_current_user_id()) or user_is_admin
+    if user_premium:
+        _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "📊 Transactions", "📋 Analysis", "🤖 Ask Claude", "💬 Ask ChatGPT", "📝 Notes"]
+        _TAB_KEYS = ["squad", "map", "tactics", "transactions", "analysis", "ask", "chatgpt", "notes"]
+    else:
+        _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "📊 Transactions", "📋 Analysis", "💬 Ask ChatGPT", "📝 Notes"]
+        _TAB_KEYS = ["squad", "map", "tactics", "transactions", "analysis", "chatgpt", "notes"]
 
     # Inject JS to track tab clicks and update URL query param
     import streamlit.components.v1 as _components
@@ -2494,7 +2554,16 @@ def main():
                 height=0,
             )
 
-    tab_squad, tab_map, tab_tactics, tab_transactions, tab_report, tab_ask, tab_gpt, tab_notes = st.tabs(_TAB_NAMES)
+    all_tabs = st.tabs(_TAB_NAMES)
+    tab_idx = {k: v for k, v in zip(_TAB_KEYS, all_tabs)}
+    tab_squad = tab_idx["squad"]
+    tab_map = tab_idx["map"]
+    tab_tactics = tab_idx["tactics"]
+    tab_transactions = tab_idx["transactions"]
+    tab_report = tab_idx["analysis"]
+    tab_ask = tab_idx.get("ask")
+    tab_gpt = tab_idx["chatgpt"]
+    tab_notes = tab_idx["notes"]
 
     # Handle refresh all from menu
     if st.session_state.pop("do_refresh_all", False):
@@ -2585,8 +2654,9 @@ def main():
                     _generate_and_save_verdicts()
                     st.rerun()
 
-    with tab_ask:
-        squad_analysis_tab()
+    if tab_ask:
+        with tab_ask:
+            squad_analysis_tab()
 
     with tab_gpt:
         chatgpt_tab(players)
@@ -2616,6 +2686,9 @@ def main():
 
     if st.session_state.pop("show_settings_dialog", False):
         settings_dialog()
+
+    if st.session_state.pop("show_users_dialog", False):
+        manage_users_dialog()
 
     if st.session_state.pop("show_danger_dialog", False):
         danger_zone_dialog()
