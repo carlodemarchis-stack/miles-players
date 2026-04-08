@@ -352,14 +352,9 @@ def buy_player_form():
             len(st.session_state.players), _max_squad()
         ))
 
+    deal_price = market_val
     with st.form(form_key, clear_on_submit=True):
-        deal_price = st.number_input(
-            "Deal price (€ millions)",
-            min_value=0.0,
-            value=round(market_val, 2),
-            step=0.5,
-            format="%.2f",
-        )
+        st.markdown("**Deal price: {}**".format(_fmt_m(deal_price)))
         rating = st.slider("Miles's rating (0-100)", 0, 100, 70)
         notes = st.text_area("Miles's notes", value="")
 
@@ -2001,6 +1996,75 @@ def squad_map_tab(players):
 
 
 # --------------------------------------------------------------------------- #
+# Ask ChatGPT tab                                                             #
+# --------------------------------------------------------------------------- #
+
+def chatgpt_tab(players):
+    if not players:
+        st.info("Add some players first.")
+        return
+
+    import urllib.parse
+
+    st.caption("Ask ChatGPT about your squad — opens in a new tab with your team data pre-filled.")
+
+    budget_info = storage.compute_budget(_current_user_id())
+    squad_text = _build_squad_summary(players, budget_info)
+
+    # Build the context prefix
+    profile = storage.get_profile(_current_user_id())
+    user_name = profile.get("first_name") or profile.get("nickname") or "the user"
+    lang = _get_analysis_lang()
+    lang_note = " Respond in Italian." if lang == "Italiano" else ""
+
+    context = (
+        "You are a football scout. "
+        "I am {name}, managing a fantasy football squad.{lang}\n\n"
+        "My squad:\n{squad}\n\n"
+    ).format(name=user_name, lang=lang_note, squad=squad_text)
+
+    # User question
+    user_q = st.text_input(
+        "Your question",
+        placeholder="e.g. Who should I buy next? How can I improve my midfield?",
+        key="gpt_question",
+    )
+
+    # Preset questions
+    st.caption("Or pick a quick question:")
+    presets = [
+        "Analyze my squad strengths and weaknesses",
+        "Suggest 3 players I should buy next",
+        "Which players should I sell and why?",
+        "Rate my squad out of 10 with explanation",
+        "Suggest the best formation for my squad",
+    ]
+    for i, preset in enumerate(presets):
+        if st.button(preset, key="gpt_preset_{}".format(i), use_container_width=True):
+            user_q = preset
+
+    if user_q:
+        full_prompt = context + "My question: " + user_q
+        encoded = urllib.parse.quote(full_prompt, safe="")
+        url = "https://chatgpt.com/?q={}".format(encoded)
+
+        # Check URL length — ChatGPT has limits
+        if len(url) > 8000:
+            # Shorten squad data
+            short_squad = "\n".join(squad_text.split("\n")[:20])
+            full_prompt = context.replace(squad_text, short_squad + "\n...") + "My question: " + user_q
+            encoded = urllib.parse.quote(full_prompt, safe="")
+            url = "https://chatgpt.com/?q={}".format(encoded)
+
+        st.link_button(
+            "🚀 Open in ChatGPT",
+            url,
+            use_container_width=True,
+        )
+        st.caption("Click to open ChatGPT with your squad data and question pre-filled.")
+
+
+# --------------------------------------------------------------------------- #
 # Notes tab                                                                   #
 # --------------------------------------------------------------------------- #
 
@@ -2372,8 +2436,8 @@ def main():
     st.divider()
 
     # --- Tabs (persist selection via query params) ---
-    _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "📊 Transactions", "📋 Analysis", "🤖 Ask Claude", "📝 Notes"]
-    _TAB_KEYS = ["squad", "map", "tactics", "transactions", "analysis", "ask", "notes"]
+    _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "📊 Transactions", "📋 Analysis", "🤖 Ask Claude", "💬 Ask ChatGPT", "📝 Notes"]
+    _TAB_KEYS = ["squad", "map", "tactics", "transactions", "analysis", "ask", "chatgpt", "notes"]
 
     # Inject JS to track tab clicks and update URL query param
     import streamlit.components.v1 as _components
@@ -2416,7 +2480,7 @@ def main():
                 height=0,
             )
 
-    tab_squad, tab_map, tab_tactics, tab_transactions, tab_report, tab_ask, tab_notes = st.tabs(_TAB_NAMES)
+    tab_squad, tab_map, tab_tactics, tab_transactions, tab_report, tab_ask, tab_gpt, tab_notes = st.tabs(_TAB_NAMES)
 
     # Handle refresh all from menu
     if st.session_state.pop("do_refresh_all", False):
@@ -2509,6 +2573,9 @@ def main():
 
     with tab_ask:
         squad_analysis_tab()
+
+    with tab_gpt:
+        chatgpt_tab(players)
 
     with tab_notes:
         notes_tab()
