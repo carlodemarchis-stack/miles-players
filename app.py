@@ -878,13 +878,13 @@ def player_detail_dialog(p):
             st.caption(badge)
 
     st.divider()
+    is_adm = storage.is_admin(_current_user_id())
     a1, a2, a3, a4, _ = st.columns([1.2, 1, 1, 1, 1])
-    refresh_disabled = not p.get("tm_url")
-    if a1.button(
+    if is_adm and a1.button(
         "🔄 Refresh",
         key="dlg_refresh_{}".format(p["id"]),
         use_container_width=True,
-        disabled=refresh_disabled,
+        disabled=not p.get("tm_url"),
     ):
         try:
             with st.spinner("Refreshing..."):
@@ -928,45 +928,88 @@ def player_detail_dialog(p):
 # Refresh all                                                                 #
 # --------------------------------------------------------------------------- #
 
+@st.dialog("Refresh All Players", width="large")
 def refresh_all_players():
-    players = st.session_state.players
-    tm_players = [p for p in players if p.get("tm_url")]
+    """Admin only: refresh ALL players across ALL users from TM + SofaScore."""
+    all_players = storage.list_all_players()
+    tm_players = [p for p in all_players if p.get("tm_url")]
     if not tm_players:
         st.warning("No players with Transfermarkt URLs.")
         return
 
-    progress = st.progress(0, text="Refreshing players from Transfermarkt...")
+    # Dedupe by tm_url to avoid scraping the same player twice
+    seen_urls = {}
+    unique_players = []
+    for p in tm_players:
+        url = p["tm_url"]
+        if url not in seen_urls:
+            seen_urls[url] = []
+            unique_players.append(p)
+        seen_urls[url].append(p)
+
+    st.markdown("**{} unique players** to refresh ({} total across all users)".format(
+        len(unique_players), len(tm_players)
+    ))
+
+    log = st.container(height=400)
+    progress = st.progress(0)
+    status = st.empty()
+
     ok = 0
     fail = 0
-    for idx, p in enumerate(tm_players):
-        progress.progress(
-            (idx + 1) / len(tm_players),
-            text="Refreshing {} ({}/{})...".format(p["name"], idx + 1, len(tm_players)),
-        )
+    failed_names = []
+    for idx, p in enumerate(unique_players):
+        pct = (idx + 1) / len(unique_players)
+        progress.progress(pct)
+        owners = len(seen_urls[p["tm_url"]])
+        status.caption("({}/{}) Refreshing **{}**...".format(idx + 1, len(unique_players), p["name"]))
+
         try:
             fresh = scrape_player(p["tm_url"])
             ss = _fetch_sofascore(fresh.get("name", p.get("name", "")))
             fresh.update(ss)
-            preserved = {
-                "id": p["id"],
-                "rating": p.get("rating"),
-                "notes": p.get("notes", ""),
-                "purchase_price_m": p.get("purchase_price_m"),
-            }
-            merged = {**p, **fresh, **preserved}
-            saved = save_player(merged)
-            for i, x in enumerate(st.session_state.players):
-                if x["id"] == p["id"]:
-                    st.session_state.players[i] = saved
-                    break
+
+            # Update ALL players with this tm_url (across all users)
+            for dup in seen_urls[p["tm_url"]]:
+                preserved = {
+                    "id": dup["id"],
+                    "user_id": dup["user_id"],
+                    "rating": dup.get("rating"),
+                    "notes": dup.get("notes", ""),
+                    "purchase_price_m": dup.get("purchase_price_m"),
+                    "verdict": dup.get("verdict"),
+                    "verdict_reason": dup.get("verdict_reason"),
+                }
+                merged = {**dup, **fresh, **preserved}
+                storage.upsert_player(dup["user_id"], merged)
+
             ok += 1
-        except Exception:
+            log.markdown("✅ **{}** — {} · SofaScore {} · {} owner{}".format(
+                p["name"], fresh.get("market_value", "?"),
+                fresh.get("sofascore_rating", "n/a"),
+                owners, "s" if owners > 1 else "",
+            ))
+        except Exception as e:
             fail += 1
-        if idx < len(tm_players) - 1:
+            failed_names.append(p["name"])
+            log.markdown("❌ **{}** — {}".format(p["name"], str(e)[:60]))
+
+        if idx < len(unique_players) - 1:
             time.sleep(2.5)
 
-    progress.empty()
-    st.success("Refreshed {} players. {} failed.".format(ok, fail))
+    progress.progress(1.0)
+    status.empty()
+
+    # Summary
+    st.divider()
+    st.success("✅ Done! {} refreshed, {} failed.".format(ok, fail))
+    if failed_names:
+        st.warning("Failed: {}".format(", ".join(failed_names)))
+
+    # Reload current user's players
+    st.session_state.players = load_players()
+    if st.button("Close", use_container_width=True):
+        st.rerun()
 
 
 # --------------------------------------------------------------------------- #
@@ -2410,9 +2453,10 @@ def main():
                 if st.button("⚠️ Danger Zone", use_container_width=True, key="open_danger"):
                     st.session_state["show_danger_dialog"] = True
                     st.rerun()
-            if st.button("🔄 Refresh All Players", use_container_width=True, key="menu_refresh_all"):
-                st.session_state["do_refresh_all"] = True
-                st.rerun()
+            if user_is_admin:
+                if st.button("🔄 Refresh All Players", use_container_width=True, key="menu_refresh_all"):
+                    st.session_state["do_refresh_all"] = True
+                    st.rerun()
             st.divider()
             if st.button("🚪 Sign out", use_container_width=True, key="signout_btn"):
                 from auth import _clear_session
@@ -2565,9 +2609,10 @@ def main():
     tab_gpt = tab_idx["chatgpt"]
     tab_notes = tab_idx["notes"]
 
-    # Handle refresh all from menu
+    # Handle refresh all from menu (dialog)
     if st.session_state.pop("do_refresh_all", False):
         refresh_all_players()
+        st.stop()
 
     with tab_squad:
         # Sort only (no filters, no view toggle — always table)

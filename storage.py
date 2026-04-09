@@ -137,6 +137,17 @@ def list_players(user_id: str) -> List[dict]:
     return res.data or []
 
 
+def list_all_players() -> List[dict]:
+    """Admin: list ALL players across all users."""
+    if _use_local():
+        return []
+    def _q():
+        client = _supabase_client()
+        return client.table("players").select("*").order("id").execute()
+    res = _safe_execute(_q)
+    return res.data or []
+
+
 def upsert_player(user_id: str, player: dict) -> dict:
     if _use_local():
         raw = _local_user_block(user_id)
