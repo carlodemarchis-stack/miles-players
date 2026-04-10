@@ -2465,8 +2465,9 @@ def main():
             if st.button("🚪 Sign out", use_container_width=True, key="signout_btn"):
                 from auth import _clear_session
                 _clear_session()
+                st.stop()
 
-    players = st.session_state.players
+    players = st.session_state.get("players", [])
 
     # Load cross-user ownership data (cached per render)
     if "owned_map" not in st.session_state:
