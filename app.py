@@ -1002,6 +1002,10 @@ def refresh_all_players():
 
     # Summary
     st.divider()
+    import datetime
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    storage.update_app_settings({"last_refresh_at": now})
+    st.session_state.pop("app_settings", None)
     st.success("✅ Done! {} refreshed, {} failed.".format(ok, fail))
     if failed_names:
         st.warning("Failed: {}".format(", ".join(failed_names)))
@@ -2624,6 +2628,9 @@ def main():
             st.info("No players yet! Search and buy your first one. ⚽")
         else:
             player_table(sorted_players)
+            last_refresh = _app_settings().get("last_refresh_at", "")
+            if last_refresh:
+                st.caption("📅 Data from TM & SofaScore updated at {}".format(last_refresh))
 
     with tab_map:
         squad_map_tab(players)

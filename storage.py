@@ -293,7 +293,11 @@ def set_budget(user_id: str, budget_m: float) -> None:
 def ensure_profile(
     user_id: str, email: str, display_name: Optional[str] = None
 ) -> dict:
-    """Create a user_profiles row if missing. Returns the profile."""
+    """Create a user_profiles row if missing. Returns the profile.
+
+    Looks up by email first (since user_id may be email, not UUID).
+    Creates a new UUID if no existing profile found.
+    """
     if _use_local():
         raw = _local_user_block(user_id)
         return {
@@ -303,15 +307,14 @@ def ensure_profile(
             "budget_m": raw["users"][user_id].get("budget_m", _DEFAULT_BUDGET_M),
         }
     client = _supabase_client()
-    existing = (
-        client.table("user_profiles")
-        .select("*")
-        .eq("user_id", user_id)
-        .maybe_single()
-        .execute()
-    )
-    if existing and existing.data:
-        return existing.data
+    # Look up by email (stable key)
+    existing = get_profile_by_email(email)
+    if existing:
+        return existing
+
+    # Generate new UUID for new user
+    import uuid as _uuid
+    new_user_id = str(_uuid.uuid4())
     # Split display_name into first/last
     first_name = ""
     last_name = ""
@@ -324,7 +327,7 @@ def ensure_profile(
     is_admin_user = (email or "").lower().strip() == admin_email
 
     row = {
-        "user_id": user_id,
+        "user_id": new_user_id,
         "email": email,
         "display_name": display_name,
         "first_name": first_name,
@@ -577,7 +580,7 @@ def get_app_settings() -> dict:
 
 def update_app_settings(fields: dict) -> dict:
     """Update app-wide settings (admin only)."""
-    allowed = {"budget_m", "max_squad_size", "min_players_for_analysis", "analysis_prompt", "formations"}
+    allowed = {"budget_m", "max_squad_size", "min_players_for_analysis", "analysis_prompt", "formations", "last_refresh_at"}
     payload = {k: v for k, v in fields.items() if k in allowed}
     if not payload:
         return get_app_settings()

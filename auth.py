@@ -67,7 +67,7 @@ def require_login():
     # Ensure profile exists in Supabase (for data storage)
     if not profile:
         # Check invite code
-        if not st.session_state.get("invite_redeemed_{}".format(user_id)):
+        if not st.session_state.get("invite_redeemed_{}".format(email)):
             st.title("⚽ Football Stars")
             st.subheader("Welcome, {}".format(name or email))
             st.caption("You need an invite code to get started.")
@@ -75,8 +75,11 @@ def require_login():
             col1, col2 = st.columns(2)
             if col1.button("✅ Redeem", use_container_width=True, disabled=not code):
                 if code.strip() == _invite_code():
-                    storage.ensure_profile(user_id, email, name)
-                    st.session_state["invite_redeemed_{}".format(user_id)] = True
+                    new_profile = storage.ensure_profile(email, email, name)
+                    st.session_state["invite_redeemed_{}".format(email)] = True
+                    if new_profile.get("user_id"):
+                        user["id"] = new_profile["user_id"]
+                        st.session_state["sb_user"] = user
                     st.success("You're in!")
                     st.rerun()
                 else:
