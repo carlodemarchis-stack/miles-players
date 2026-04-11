@@ -50,9 +50,20 @@ def _get_scrapingbee_key():
         return ""
 
 
+def _decode_response(raw, encoding):
+    if encoding == "gzip":
+        import gzip
+        raw = gzip.decompress(raw)
+    elif encoding == "deflate":
+        import zlib
+        raw = zlib.decompress(raw)
+    return raw.decode("utf-8", errors="ignore")
+
+
 def _fetch(url: str) -> str:
     # Try ScrapingBee first if key is available (handles TM blocks)
     sb_key = _get_scrapingbee_key()
+    sb_error = None
     if sb_key:
         try:
             sb_url = "https://app.scrapingbee.com/api/v1/?api_key={}&url={}&render_js=false".format(
@@ -60,30 +71,21 @@ def _fetch(url: str) -> str:
             )
             req = urllib.request.Request(sb_url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=30) as r:
-                raw = r.read()
-                encoding = r.headers.get("Content-Encoding", "").lower()
-                if encoding == "gzip":
-                    import gzip
-                    raw = gzip.decompress(raw)
-                elif encoding == "deflate":
-                    import zlib
-                    raw = zlib.decompress(raw)
-                return raw.decode("utf-8", errors="ignore")
-        except Exception:
-            pass  # Fall through to direct fetch
+                return _decode_response(r.read(), r.headers.get("Content-Encoding", "").lower())
+        except urllib.error.HTTPError as e:
+            sb_error = "ScrapingBee HTTP {}: {}".format(e.code, e.read().decode("utf-8", errors="ignore")[:200])
+        except Exception as e:
+            sb_error = "ScrapingBee: {}".format(e)
 
     # Direct fetch (dev or fallback)
-    req = urllib.request.Request(url, headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=20) as r:
-        raw = r.read()
-        encoding = r.headers.get("Content-Encoding", "").lower()
-        if encoding == "gzip":
-            import gzip
-            raw = gzip.decompress(raw)
-        elif encoding == "deflate":
-            import zlib
-            raw = zlib.decompress(raw)
-        return raw.decode("utf-8", errors="ignore")
+    try:
+        req = urllib.request.Request(url, headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return _decode_response(r.read(), r.headers.get("Content-Encoding", "").lower())
+    except Exception as e:
+        if sb_error:
+            raise Exception("{} | Direct: {}".format(sb_error, e))
+        raise
 
 
 def _text(el) -> str:
