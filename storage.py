@@ -409,6 +409,7 @@ def update_profile(user_id: str, fields: dict) -> dict:
     allowed = {
         "first_name", "last_name", "nickname", "team_name", "year_of_birth",
         "selected_formation", "formation_overrides", "is_premium", "admin_pin",
+        "language",
     }
     payload = {k: v for k, v in fields.items() if k in allowed}
     if not payload:
@@ -552,6 +553,7 @@ _DEFAULT_APP_SETTINGS = {
     "min_players_for_analysis": 11,
     "analysis_prompt": "",
     "formations": json.dumps(_DEFAULT_FORMATIONS),
+    "max_saved_teams": 20,
 }
 
 
@@ -580,7 +582,7 @@ def get_app_settings() -> dict:
 
 def update_app_settings(fields: dict) -> dict:
     """Update app-wide settings (admin only)."""
-    allowed = {"budget_m", "max_squad_size", "min_players_for_analysis", "analysis_prompt", "formations", "last_refresh_at"}
+    allowed = {"budget_m", "max_squad_size", "min_players_for_analysis", "analysis_prompt", "formations", "last_refresh_at", "max_saved_teams"}
     payload = {k: v for k, v in fields.items() if k in allowed}
     if not payload:
         return get_app_settings()
@@ -761,6 +763,79 @@ def save_last_analysis(user_id: str, text: str) -> None:
 # Reset (danger zone)                                                         #
 # --------------------------------------------------------------------------- #
 
+def list_saved_teams(user_id):
+    """List all saved team snapshots for a user, newest first."""
+    if _use_local():
+        raw = _local_user_block(user_id)
+        return list(reversed(raw["users"][user_id].get("saved_teams", [])))
+    def _q():
+        client = _supabase_client()
+        return (
+            client.table("saved_teams")
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+    res = _safe_execute(_q)
+    return res.data or []
+
+
+def save_team(user_id, name, description, players, formation, total_value_m, avg_sofascore):
+    """Save a snapshot of the current squad."""
+    payload = {
+        "user_id": user_id,
+        "name": name,
+        "description": description,
+        "snapshot": players,
+        "formation": formation,
+        "total_value_m": total_value_m,
+        "avg_sofascore": avg_sofascore,
+    }
+    if _use_local():
+        import datetime
+        raw = _local_user_block(user_id)
+        teams = raw["users"][user_id].setdefault("saved_teams", [])
+        new = {**payload, "id": _next_id(teams),
+               "created_at": datetime.datetime.now().isoformat()}
+        teams.append(new)
+        _local_save(raw)
+        return new
+    client = _supabase_client()
+    res = client.table("saved_teams").insert(payload).execute()
+    return res.data[0] if res.data else payload
+
+
+def delete_saved_team(user_id, team_id):
+    if _use_local():
+        raw = _local_user_block(user_id)
+        raw["users"][user_id]["saved_teams"] = [
+            t for t in raw["users"][user_id].get("saved_teams", [])
+            if t.get("id") != team_id
+        ]
+        _local_save(raw)
+        return
+    client = _supabase_client()
+    client.table("saved_teams").delete().eq("id", team_id).eq("user_id", user_id).execute()
+
+
+def rename_saved_team(user_id, team_id, new_name, new_description=""):
+    if _use_local():
+        raw = _local_user_block(user_id)
+        for t in raw["users"][user_id].get("saved_teams", []):
+            if t.get("id") == team_id:
+                t["name"] = new_name
+                t["description"] = new_description
+                break
+        _local_save(raw)
+        return
+    client = _supabase_client()
+    client.table("saved_teams").update({
+        "name": new_name,
+        "description": new_description,
+    }).eq("id", team_id).eq("user_id", user_id).execute()
+
+
 def delete_all_data(user_id: str) -> None:
     """Delete all players + transactions and reset budget to default."""
     if _use_local():
@@ -771,6 +846,7 @@ def delete_all_data(user_id: str) -> None:
         _local_save(raw)
         return
     client = _supabase_client()
+    client.table("saved_teams").delete().eq("user_id", user_id).execute()
     client.table("transactions").delete().eq("user_id", user_id).execute()
     client.table("players").delete().eq("user_id", user_id).execute()
     client.table("user_profiles").update({"budget_m": _DEFAULT_BUDGET_M}).eq(

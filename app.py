@@ -1393,15 +1393,19 @@ def _generate_and_save_verdicts():
 
 
 def _get_analysis_lang():
-    """Return the last used analysis language from settings."""
-    settings = load_settings()
-    return settings.get("analysis_lang", "English")
+    """Return the user's preferred language from profile (fallback to English)."""
+    try:
+        profile = storage.get_profile(_current_user_id())
+        return profile.get("language") or "English"
+    except Exception:
+        return "English"
 
 
 def _save_analysis_lang(lang):
-    settings = load_settings()
-    settings["analysis_lang"] = lang
-    save_settings(settings)
+    try:
+        storage.update_profile(_current_user_id(), {"language": lang})
+    except Exception:
+        pass
 
 
 def run_post_transaction_analysis(txn_type, player_name, deal_price=0):
@@ -1862,6 +1866,279 @@ def _spread_players(players_in_position, x_base, spread=14):
     return coords
 
 
+def _max_saved_teams():
+    return int(_app_settings().get("max_saved_teams", 20))
+
+
+@st.dialog("Save this team", width="large")
+def save_team_dialog(players):
+    st.caption("Freeze a snapshot of your current 22/22 squad.")
+    name = st.text_input("Team name *", placeholder="e.g. January Champions", key="save_team_name")
+    desc = st.text_area("Description (optional)", key="save_team_desc")
+
+    # Preview stats
+    total_value = sum(_mv_num(p) for p in players)
+    ss_list = [float(p.get("sofascore_rating") or 0) for p in players if p.get("sofascore_rating")]
+    avg_ss = sum(ss_list) / len(ss_list) if ss_list else 0
+    st.caption("Value: {} · Avg SofaScore: {:.2f}".format(_fmt_m(total_value), avg_ss))
+
+    c1, c2 = st.columns(2)
+    if c1.button("💾 Save", use_container_width=True, disabled=not name.strip()):
+        existing = storage.list_saved_teams(_current_user_id())
+        if len(existing) >= _max_saved_teams():
+            st.error("You've reached the max of {} saved teams. Delete one first.".format(_max_saved_teams()))
+            return
+        saved_form, _ = _get_user_formation_data()
+        storage.save_team(
+            _current_user_id(),
+            name.strip(),
+            desc.strip(),
+            players,
+            saved_form or "",
+            total_value,
+            round(avg_ss, 2),
+        )
+        st.success("Team saved!")
+        st.rerun()
+    if c2.button("Cancel", use_container_width=True):
+        st.rerun()
+
+
+@st.dialog("Team details", width="large")
+def saved_team_detail_dialog(team):
+    name = team.get("name", "?")
+    desc = team.get("description", "")
+    created = team.get("created_at", "")
+    if isinstance(created, str) and len(created) > 16:
+        created = created[:16].replace("T", " ")
+    snapshot = team.get("snapshot") or []
+    if isinstance(snapshot, str):
+        try:
+            snapshot = json.loads(snapshot)
+        except Exception:
+            snapshot = []
+
+    st.markdown("### 🏆 {}".format(name))
+    if desc:
+        st.caption(desc)
+    st.caption("📅 {} · ⚔️ {}".format(created, team.get("formation") or "-"))
+
+    # Summary stats (same style as Map tab)
+    total_value = float(team.get("total_value_m") or 0)
+    avg_ss_val = float(team.get("avg_sofascore") or 0)
+    age_list = [p["age"] for p in snapshot if p.get("age")]
+    avg_age = sum(age_list) / len(age_list) if age_list else 0
+    st.markdown("**{}** players · {} · Avg SofaScore {:.2f} · Avg Age {:.1f}".format(
+        len(snapshot), _fmt_m(total_value), avg_ss_val, avg_age
+    ))
+
+    _DEPT_MAP_TEAMS = {
+        "Goalkeeper": "GK",
+        "Centre-Back": "DEF", "Right-Back": "DEF", "Left-Back": "DEF",
+        "Defensive Midfield": "MID", "Central Midfield": "MID", "Attacking Midfield": "MID",
+        "Right Winger": "ATT", "Left Winger": "ATT", "Second Striker": "ATT", "Centre-Forward": "ATT",
+    }
+    dept_values = {"GK": 0.0, "DEF": 0.0, "MID": 0.0, "ATT": 0.0}
+    dept_counts = {"GK": 0, "DEF": 0, "MID": 0, "ATT": 0}
+    dept_ages = {"GK": [], "DEF": [], "MID": [], "ATT": []}
+    for p in snapshot:
+        d = _DEPT_MAP_TEAMS.get(p.get("position", ""), "")
+        if d:
+            dept_values[d] += _mv_num(p)
+            dept_counts[d] += 1
+            if p.get("age"):
+                dept_ages[d].append(p["age"])
+
+    def _dept_str(icon, label, dept):
+        aa = sum(dept_ages[dept]) / len(dept_ages[dept]) if dept_ages[dept] else 0
+        age_str = " ~{:.0f}y".format(aa) if aa else ""
+        return "{} {}: {} ({}){}".format(icon, label, _fmt_m(dept_values[dept]), dept_counts[dept], age_str)
+
+    st.markdown("{} · {} · {} · {}".format(
+        _dept_str("🧤", "GK", "GK"),
+        _dept_str("🛡️", "DEF", "DEF"),
+        _dept_str("⚙️", "MID", "MID"),
+        _dept_str("⚔️", "ATT", "ATT"),
+    ))
+
+    st.divider()
+
+    # Render pitch using the same layout as squad map
+    by_position = {}
+    for p in snapshot:
+        pos = p.get("position", "")
+        if pos in _POSITION_COORDS:
+            by_position.setdefault(pos, []).append(p)
+
+    all_placed = []
+    for pos, group in by_position.items():
+        coords = _POSITION_COORDS[pos]
+        spread = _spread_players(group, coords["x_base"])
+        for x, p in spread:
+            all_placed.append((x, coords["y"], p))
+
+    parts = []
+    parts.append(
+        '<div style="position:relative;width:100%;max-width:700px;'
+        'aspect-ratio:68/84;'
+        'background:repeating-linear-gradient(to bottom,'
+        '#1a6b35 0%,#1a6b35 8.33%,#1f7a3d 8.33%,#1f7a3d 16.66%);'
+        'border:3px solid rgba(255,255,255,0.6);border-radius:8px;overflow:hidden;'
+        'box-shadow:inset 0 0 40px rgba(0,0,0,0.3),0 4px 12px rgba(0,0,0,0.3);">'
+    )
+    parts.append('<div style="position:absolute;top:50%;left:5%;right:5%;height:2px;background:rgba(255,255,255,0.7);"></div>')
+    parts.append('<div style="position:absolute;top:50%;left:50%;width:70px;height:70px;border:2px solid rgba(255,255,255,0.7);border-radius:50%;transform:translate(-50%,-50%);"></div>')
+    parts.append('<div style="position:absolute;top:50%;left:50%;width:6px;height:6px;background:rgba(255,255,255,0.7);border-radius:50%;transform:translate(-50%,-50%);"></div>')
+    parts.append('<div style="position:absolute;top:0;left:22%;right:22%;height:14%;border:2px solid rgba(255,255,255,0.7);border-top:none;"></div>')
+    parts.append('<div style="position:absolute;top:0;left:34%;right:34%;height:7%;border:2px solid rgba(255,255,255,0.7);border-top:none;"></div>')
+    parts.append('<div style="position:absolute;bottom:0;left:22%;right:22%;height:14%;border:2px solid rgba(255,255,255,0.7);border-bottom:none;"></div>')
+    parts.append('<div style="position:absolute;bottom:0;left:34%;right:34%;height:7%;border:2px solid rgba(255,255,255,0.7);border-bottom:none;"></div>')
+
+    for x, y, p in all_placed:
+        surname = p.get("name", "?").split()[-1]
+        ss_r = str(p.get("sofascore_rating", "")) if p.get("sofascore_rating") else ""
+        photo = p.get("photo_url", "")
+        mv_str = p.get("market_value", "")
+        age_str = str(p.get("age", "")) if p.get("age") else ""
+        role = SHORT_POS.get(p.get("position", ""), ROLE_PREFIX.get(p.get("position", ""), ""))
+
+        if photo:
+            img_html = (
+                '<img src="{photo}" style="width:42px;height:42px;border-radius:50%;'
+                'border:2px solid white;object-fit:cover;display:block;margin:0 auto;"/>'
+            ).format(photo=photo)
+        else:
+            img_html = (
+                '<div style="width:42px;height:42px;background:#555;border-radius:50%;'
+                'border:2px solid white;display:flex;align-items:center;justify-content:center;'
+                'font-size:11px;color:white;font-weight:bold;margin:0 auto;">?</div>'
+            )
+
+        parts.append(
+            '<div style="position:absolute;left:{x}%;top:{y}%;transform:translate(-50%,-50%);">'
+            '<div style="background:rgba(0,0,0,0.75);border-radius:8px;padding:3px 6px 4px;'
+            'text-align:center;min-width:55px;box-shadow:0 1px 4px rgba(0,0,0,0.5);">'
+            '<div style="font-size:9px;color:#aaa;font-weight:700;letter-spacing:0.5px;">{role}</div>'
+            '{img}'
+            '<div style="font-size:10px;color:white;font-weight:700;margin-top:2px;white-space:nowrap;">{nm}</div>'
+            '<div style="font-size:8px;color:#ccc;white-space:nowrap;">'
+            '{age}{sep}{ss}</div>'
+            '<div style="font-size:8px;color:#999;">{mv}</div>'
+            '</div></div>'.format(
+                x=x, y=y, img=img_html, role=role,
+                nm=surname, age=age_str, sep=" · " if age_str and ss_r else "",
+                ss=ss_r, mv=mv_str,
+            )
+        )
+    parts.append('</div>')
+    st.markdown("".join(parts), unsafe_allow_html=True)
+
+    st.divider()
+    b1, b2, b3 = st.columns(3)
+    if b1.button("✏️ Rename", use_container_width=True, key="rename_team_btn"):
+        st.session_state["rename_team_id"] = team.get("id")
+        st.session_state["rename_team_name"] = name
+        st.session_state["rename_team_desc"] = desc
+        st.rerun()
+    if b2.button("🗑️ Delete", use_container_width=True, type="secondary", key="delete_team_btn"):
+        storage.delete_saved_team(_current_user_id(), team.get("id"))
+        st.success("Deleted!")
+        st.rerun()
+    if b3.button("Close", use_container_width=True, key="close_team_btn"):
+        st.rerun()
+
+
+@st.dialog("Rename team")
+def rename_team_dialog():
+    team_id = st.session_state.get("rename_team_id")
+    new_name = st.text_input(
+        "Name", value=st.session_state.get("rename_team_name", ""), key="rt_name"
+    )
+    new_desc = st.text_area(
+        "Description", value=st.session_state.get("rename_team_desc", ""), key="rt_desc"
+    )
+    c1, c2 = st.columns(2)
+    if c1.button("💾 Save", use_container_width=True, disabled=not new_name.strip()):
+        storage.rename_saved_team(
+            _current_user_id(), team_id, new_name.strip(), new_desc.strip()
+        )
+        for k in ("rename_team_id", "rename_team_name", "rename_team_desc"):
+            st.session_state.pop(k, None)
+        st.rerun()
+    if c2.button("Cancel", use_container_width=True):
+        for k in ("rename_team_id", "rename_team_name", "rename_team_desc"):
+            st.session_state.pop(k, None)
+        st.rerun()
+
+
+def saved_teams_tab(players):
+    uid = _current_user_id()
+    teams = storage.list_saved_teams(uid)
+    max_size = _max_squad()
+    full = len(players) >= max_size
+
+    # Header with save button
+    h1, h2 = st.columns([4, 1])
+    h1.markdown("**{} saved team{}** (max {})".format(
+        len(teams), "s" if len(teams) != 1 else "", _max_saved_teams()
+    ))
+    if full:
+        if h2.button("💾 Save current", use_container_width=True, key="save_cur_team"):
+            st.session_state["show_save_team_dialog"] = True
+            st.rerun()
+    else:
+        h2.caption("Save unlocks at {}/{}".format(len(players), max_size))
+
+    if not teams:
+        st.info("No saved teams yet. Fill your squad to {}/{} and hit 💾 Save.".format(max_size, max_size))
+        return
+
+    st.divider()
+
+    # Row per team: name/date/value + 5 top player photos + view button
+    for t in teams:
+        snapshot = t.get("snapshot") or []
+        if isinstance(snapshot, str):
+            try:
+                snapshot = json.loads(snapshot)
+            except Exception:
+                snapshot = []
+        created = t.get("created_at", "")
+        if isinstance(created, str) and len(created) > 10:
+            created = created[:10]
+
+        # Top 5 players by market value
+        top5 = sorted(snapshot, key=lambda p: _mv_num(p), reverse=True)[:5]
+
+        with st.container(border=True):
+            c_info, c_photos, c_btn = st.columns([3, 4, 1])
+            with c_info:
+                st.markdown("**🏆 {}**".format(t.get("name", "?")))
+                st.caption("📅 {} · ⚔️ {} · 👥 {}".format(
+                    created, t.get("formation") or "-", len(snapshot)
+                ))
+                st.caption("💰 {} · 📈 {:.2f}".format(
+                    _fmt_m(float(t.get("total_value_m") or 0)),
+                    float(t.get("avg_sofascore") or 0),
+                ))
+            with c_photos:
+                if top5:
+                    pcols = st.columns(5)
+                    for j, p in enumerate(top5):
+                        with pcols[j]:
+                            if p.get("photo_url"):
+                                st.image(p["photo_url"], width=44)
+                            surname = p.get("name", "?").split()[-1]
+                            st.caption("**{}**".format(surname))
+                            st.caption(p.get("market_value", ""))
+            with c_btn:
+                st.write("")
+                if st.button("👀", key="view_team_{}".format(t.get("id")),
+                             use_container_width=True, help="View details"):
+                    st.session_state["view_team_id"] = t.get("id")
+                    st.rerun()
+
+
 def squad_map_tab(players):
     if not players:
         st.info("No players yet. Buy some to see your squad map.")
@@ -2193,6 +2470,11 @@ def settings_dialog():
         "Min players for analysis", value=int(app_s.get("min_players_for_analysis", 11)),
         min_value=1, max_value=50,
     )
+    new_max_saved = st.number_input(
+        "Max saved teams per user",
+        value=int(app_s.get("max_saved_teams", 20)),
+        min_value=1, max_value=200,
+    )
     current_prompt = app_s.get("analysis_prompt", "") or DEFAULT_ANALYSIS_PROMPT
     new_prompt = st.text_area(
         "Analysis prompt (placeholders: {user_name}, {user_age}, {max_squad}, {lang})",
@@ -2226,6 +2508,7 @@ def settings_dialog():
             "budget_m": new_budget,
             "max_squad_size": int(new_max),
             "min_players_for_analysis": int(new_min_analysis),
+            "max_saved_teams": int(new_max_saved),
             "analysis_prompt": new_prompt.strip(),
             "formations": json.dumps(parsed_formations),
         })
@@ -2351,51 +2634,53 @@ def manage_users_dialog():
         is_adm = p.get("is_admin", False)
         is_prem = p.get("is_premium", False)
 
-        with st.container(border=True):
-            c1, c2, c3, c4, c5 = st.columns([3, 1.5, 1, 1, 1])
-            c1.markdown("**{}**".format(name))
-            c1.caption("{} · {}".format(email, team or "no team"))
-            new_admin = c2.checkbox(
-                "Admin", value=bool(is_adm), key="adm_{}".format(uid)
-            )
-            new_premium = c3.checkbox(
-                "Prem", value=bool(is_prem), key="prem_{}".format(uid)
-            )
-            if c4.button("💾", key="save_u_{}".format(uid), help="Save changes"):
-                storage.admin_update_profile(uid, {
-                    "is_admin": new_admin,
-                    "is_premium": new_premium,
-                })
-                st.success("Updated {}".format(name))
-                st.rerun()
-            # Impersonate button
-            current_real = st.session_state.get("real_user_id", _current_user_id())
-            if uid != current_real:
-                if c5.button("👤", key="imp_{}".format(uid), help="Impersonate " + name):
-                    # Check if admin already has a PIN
-                    real_profile = storage.get_profile(current_real)
-                    saved_pin = real_profile.get("admin_pin", "")
-                    if saved_pin:
-                        # Start impersonation directly with saved PIN
-                        st.session_state["real_user_id"] = current_real
-                        st.session_state["real_user_email"] = st.session_state["user"].get("email", "")
-                        st.session_state["impersonate_pin"] = saved_pin
-                        st.session_state["user"] = {
-                            "id": uid,
-                            "email": email,
-                            "display_name": name,
-                        }
-                        for k in ("players", "app_settings", "owned_map"):
-                            st.session_state.pop(k, None)
-                        st.rerun()
-                    else:
-                        # First time — ask to set PIN
-                        st.session_state["pending_impersonate"] = {
-                            "uid": uid,
-                            "email": email,
-                            "name": name,
-                        }
-                        st.rerun()
+        c1, c2, c3, c4, c5 = st.columns([3.5, 1, 1, 0.6, 0.6])
+        c1.markdown(
+            "**{}** · _{}_ · <small>{}</small>".format(name, team or "no team", email),
+            unsafe_allow_html=True,
+        )
+        new_admin = c2.checkbox(
+            "Admin", value=bool(is_adm), key="adm_{}".format(uid)
+        )
+        new_premium = c3.checkbox(
+            "Prem", value=bool(is_prem), key="prem_{}".format(uid)
+        )
+        if c4.button("💾", key="save_u_{}".format(uid), help="Save changes"):
+            storage.admin_update_profile(uid, {
+                "is_admin": new_admin,
+                "is_premium": new_premium,
+            })
+            st.success("Updated {}".format(name))
+            st.rerun()
+
+        # Impersonate button
+        current_real = st.session_state.get("real_user_id", _current_user_id())
+        if uid != current_real:
+            if c5.button("👤", key="imp_{}".format(uid), help="Impersonate " + name):
+                # Check if admin already has a PIN
+                real_profile = storage.get_profile(current_real)
+                saved_pin = real_profile.get("admin_pin", "")
+                if saved_pin:
+                    # Start impersonation directly with saved PIN
+                    st.session_state["real_user_id"] = current_real
+                    st.session_state["real_user_email"] = st.session_state["user"].get("email", "")
+                    st.session_state["impersonate_pin"] = saved_pin
+                    st.session_state["user"] = {
+                        "id": uid,
+                        "email": email,
+                        "display_name": name,
+                    }
+                    for k in ("players", "app_settings", "owned_map"):
+                        st.session_state.pop(k, None)
+                    st.rerun()
+                else:
+                    # First time — ask to set PIN
+                    st.session_state["pending_impersonate"] = {
+                        "uid": uid,
+                        "email": email,
+                        "name": name,
+                    }
+                    st.rerun()
 
 
 @st.dialog("Danger Zone")
@@ -2644,11 +2929,11 @@ def main():
     # --- Tabs (persist selection via query params) ---
     user_premium = storage.is_premium(_current_user_id()) or user_is_admin
     if user_premium:
-        _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "📊 Transactions", "📋 Analysis", "🤖 Ask Claude", "💬 Ask ChatGPT", "📝 Notes"]
-        _TAB_KEYS = ["squad", "map", "tactics", "transactions", "analysis", "ask", "chatgpt", "notes"]
+        _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "🏆 Teams", "📊 Transactions", "📋 Analysis", "🤖 Ask Claude", "💬 Ask ChatGPT", "📝 Notes"]
+        _TAB_KEYS = ["squad", "map", "tactics", "teams", "transactions", "analysis", "ask", "chatgpt", "notes"]
     else:
-        _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "📊 Transactions", "📋 Analysis", "💬 Ask ChatGPT", "📝 Notes"]
-        _TAB_KEYS = ["squad", "map", "tactics", "transactions", "analysis", "chatgpt", "notes"]
+        _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "🏆 Teams", "📊 Transactions", "📋 Analysis", "💬 Ask ChatGPT", "📝 Notes"]
+        _TAB_KEYS = ["squad", "map", "tactics", "teams", "transactions", "analysis", "chatgpt", "notes"]
 
     # Inject JS to track tab clicks and update URL query param
     import streamlit.components.v1 as _components
@@ -2696,6 +2981,7 @@ def main():
     tab_squad = tab_idx["squad"]
     tab_map = tab_idx["map"]
     tab_tactics = tab_idx["tactics"]
+    tab_teams = tab_idx["teams"]
     tab_transactions = tab_idx["transactions"]
     tab_report = tab_idx["analysis"]
     tab_ask = tab_idx.get("ask")
@@ -2726,6 +3012,9 @@ def main():
 
     with tab_tactics:
         tactics_tab(players)
+
+    with tab_teams:
+        saved_teams_tab(players)
 
     with tab_transactions:
         transactions_tab()
@@ -2833,6 +3122,19 @@ def main():
 
     if st.session_state.pop("show_pin_dialog", False):
         change_pin_dialog()
+
+    if st.session_state.pop("show_save_team_dialog", False):
+        save_team_dialog(players)
+
+    if st.session_state.get("view_team_id"):
+        tid = st.session_state.pop("view_team_id")
+        team = next((t for t in storage.list_saved_teams(_current_user_id())
+                     if t.get("id") == tid), None)
+        if team:
+            saved_team_detail_dialog(team)
+
+    if st.session_state.get("rename_team_id"):
+        rename_team_dialog()
 
     if st.session_state.get("pending_impersonate"):
         impersonate_pin_setup_dialog()
