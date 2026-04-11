@@ -60,7 +60,27 @@ def _decode_response(raw, encoding):
     return raw.decode("utf-8", errors="ignore")
 
 
+# Cache hooks — set by app at startup
+_cache_get = None
+_cache_set = None
+
+
+def set_cache_hooks(get_fn, set_fn):
+    global _cache_get, _cache_set
+    _cache_get = get_fn
+    _cache_set = set_fn
+
+
 def _fetch(url: str) -> str:
+    # Try cache first
+    if _cache_get:
+        try:
+            cached = _cache_get(url)
+            if cached:
+                return cached
+        except Exception:
+            pass
+
     # Try ScrapingBee first if key is available (handles TM blocks)
     sb_key = _get_scrapingbee_key()
     sb_error = None
@@ -71,7 +91,13 @@ def _fetch(url: str) -> str:
             )
             req = urllib.request.Request(sb_url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=30) as r:
-                return _decode_response(r.read(), r.headers.get("Content-Encoding", "").lower())
+                html = _decode_response(r.read(), r.headers.get("Content-Encoding", "").lower())
+                if _cache_set:
+                    try:
+                        _cache_set(url, html)
+                    except Exception:
+                        pass
+                return html
         except urllib.error.HTTPError as e:
             sb_error = "ScrapingBee HTTP {}: {}".format(e.code, e.read().decode("utf-8", errors="ignore")[:200])
         except Exception as e:
@@ -81,7 +107,13 @@ def _fetch(url: str) -> str:
     try:
         req = urllib.request.Request(url, headers=HEADERS)
         with urllib.request.urlopen(req, timeout=20) as r:
-            return _decode_response(r.read(), r.headers.get("Content-Encoding", "").lower())
+            html = _decode_response(r.read(), r.headers.get("Content-Encoding", "").lower())
+            if _cache_set:
+                try:
+                    _cache_set(url, html)
+                except Exception:
+                    pass
+            return html
     except Exception as e:
         if sb_error:
             raise Exception("{} | Direct: {}".format(sb_error, e))

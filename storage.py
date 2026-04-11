@@ -840,6 +840,112 @@ def rename_saved_team(user_id, team_id, new_name, new_description=""):
     }).eq("id", team_id).eq("user_id", user_id).execute()
 
 
+# --------------------------------------------------------------------------- #
+# TM cache                                                                    #
+# --------------------------------------------------------------------------- #
+
+_TM_CACHE_TTL_DAYS = 7
+
+
+def tm_cache_get(url):
+    """Return cached HTML for a TM URL if fresh, else None."""
+    if _use_local():
+        return None
+    try:
+        def _q():
+            client = _supabase_client()
+            return (
+                client.table("tm_cache")
+                .select("html, cached_at")
+                .eq("url", url)
+                .maybe_single()
+                .execute()
+            )
+        res = _safe_execute(_q)
+        if not res or not res.data:
+            return None
+        cached_at = res.data.get("cached_at", "")
+        if not cached_at:
+            return None
+        import datetime
+        try:
+            ts = datetime.datetime.fromisoformat(cached_at.replace("Z", "+00:00"))
+            now = datetime.datetime.now(datetime.timezone.utc)
+            if (now - ts).days >= _TM_CACHE_TTL_DAYS:
+                return None
+        except Exception:
+            return None
+        return res.data.get("html")
+    except Exception:
+        return None
+
+
+def tm_cache_set(url, html):
+    """Store HTML in cache (upsert)."""
+    if _use_local():
+        return
+    try:
+        import datetime
+        payload = {
+            "url": url,
+            "html": html,
+            "cached_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        client = _supabase_client()
+        client.table("tm_cache").upsert(payload).execute()
+    except Exception:
+        pass
+
+
+def tm_cache_stats():
+    """Return cache stats: count, total size KB, oldest age days."""
+    if _use_local():
+        return {"count": 0, "size_kb": 0, "oldest_days": 0}
+    try:
+        client = _supabase_client()
+        res = client.table("tm_cache").select("html, cached_at").execute()
+        rows = res.data or []
+        count = len(rows)
+        total_bytes = sum(len(r.get("html", "") or "") for r in rows)
+        oldest_days = 0
+        if rows:
+            import datetime
+            now = datetime.datetime.now(datetime.timezone.utc)
+            ages = []
+            for r in rows:
+                ts_str = r.get("cached_at", "")
+                if ts_str:
+                    try:
+                        ts = datetime.datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                        ages.append((now - ts).days)
+                    except Exception:
+                        pass
+            if ages:
+                oldest_days = max(ages)
+        return {
+            "count": count,
+            "size_kb": round(total_bytes / 1024, 1),
+            "oldest_days": oldest_days,
+        }
+    except Exception:
+        return {"count": 0, "size_kb": 0, "oldest_days": 0}
+
+
+def tm_cache_invalidate(urls=None):
+    """Clear cache for given URLs, or all if None."""
+    if _use_local():
+        return
+    try:
+        client = _supabase_client()
+        if urls:
+            for url in urls:
+                client.table("tm_cache").delete().eq("url", url).execute()
+        else:
+            client.table("tm_cache").delete().neq("url", "").execute()
+    except Exception:
+        pass
+
+
 def delete_all_data(user_id: str) -> None:
     """Delete all players + transactions and reset budget to default."""
     if _use_local():

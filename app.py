@@ -8,7 +8,14 @@ import storage
 from auth import require_login
 from flags import country_to_flag
 from sofascore import get_rating_for_name
+import transfermarkt as _tm
 from transfermarkt import scrape_player, search_player
+
+# Wire TM cache hooks
+_tm.set_cache_hooks(
+    lambda url: storage.tm_cache_get(url),
+    lambda url, html: storage.tm_cache_set(url, html),
+)
 
 SETTINGS_FILE = Path(__file__).parent / "settings.json"
 
@@ -888,6 +895,9 @@ def player_detail_dialog(p):
     ):
         try:
             with st.spinner("Refreshing..."):
+                # Invalidate cache for this player
+                stats_u = p["tm_url"].replace("/profil/spieler/", "/leistungsdaten/spieler/")
+                storage.tm_cache_invalidate([p["tm_url"], stats_u])
                 fresh = scrape_player(p["tm_url"])
                 ss = _fetch_sofascore(fresh.get("name", p.get("name", "")))
                 fresh.update(ss)
@@ -936,6 +946,13 @@ def refresh_all_players():
     if not tm_players:
         st.warning("No players with Transfermarkt URLs.")
         return
+
+    # Invalidate TM cache for all player URLs + their stats pages
+    tm_urls = [p["tm_url"] for p in tm_players]
+    stats_urls = [
+        u.replace("/profil/spieler/", "/leistungsdaten/spieler/") for u in tm_urls
+    ]
+    storage.tm_cache_invalidate(tm_urls + stats_urls)
 
     # Dedupe by tm_url to avoid scraping the same player twice
     seen_urls = {}
@@ -2491,6 +2508,18 @@ def settings_dialog():
         value=formations_json,
         height=200,
     )
+
+    # TM cache stats
+    st.divider()
+    cache = storage.tm_cache_stats()
+    cs1, cs2 = st.columns([4, 1])
+    cs1.caption("📦 TM cache: **{}** entries · **{} KB** · oldest **{}d** ago".format(
+        cache["count"], cache["size_kb"], cache["oldest_days"]
+    ))
+    if cs2.button("🗑️ Clear cache", use_container_width=True, key="clear_tm_cache"):
+        storage.tm_cache_invalidate()
+        st.success("Cache cleared!")
+        st.rerun()
 
     bc1, bc2 = st.columns(2)
     if bc1.button("💾 Save settings", use_container_width=True):
