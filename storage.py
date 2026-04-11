@@ -428,11 +428,15 @@ def list_all_profiles() -> List[dict]:
     """Admin: list all user profiles."""
     if _use_local():
         return []
-    def _q():
-        client = _supabase_client()
-        return client.rpc("get_all_profiles").execute()
-    res = _safe_execute(_q)
-    return res.data or []
+    try:
+        def _q():
+            client = _supabase_client()
+            return client.rpc("get_all_profiles").execute()
+        res = _safe_execute(_q)
+        return res.data or []
+    except Exception as e:
+        st.error("list_all_profiles error: {}".format(e))
+        return []
 
 
 def admin_update_profile(user_id: str, fields: dict) -> dict:
