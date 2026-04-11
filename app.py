@@ -489,13 +489,8 @@ def sell_player_dialog(p):
         _fmt_m(purchase), _fmt_m(market_val)
     ))
 
-    sell_price = st.number_input(
-        "Sell price (€ millions)",
-        min_value=0.0,
-        value=round(market_val, 2),
-        step=0.5,
-        format="%.2f",
-    )
+    sell_price = market_val
+    st.markdown("**Sell price: {}**".format(_fmt_m(sell_price)))
 
     gain = sell_price - purchase
     if gain >= 0:
