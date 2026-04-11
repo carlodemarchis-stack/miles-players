@@ -1405,9 +1405,8 @@ def _save_analysis_lang(lang):
 
 
 def run_post_transaction_analysis(txn_type, player_name, deal_price=0):
-    """After buy/sell: quick Haiku comment + Sonnet report update + verdict update."""
+    """After buy/sell: quick Haiku reaction only. Full analysis is manual."""
     players = st.session_state.get("players", [])
-    uid = _current_user_id()
     lang = _get_analysis_lang()
     lang_instruction = " Respond entirely in Italian." if lang == "Italiano" else ""
 
@@ -1419,14 +1418,12 @@ def run_post_transaction_analysis(txn_type, player_name, deal_price=0):
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
 
-    budget_info = storage.compute_budget(uid)
+    budget_info = storage.compute_budget(_current_user_id())
     squad_text = _build_squad_summary(players, budget_info)
 
     action = "bought {} for {}".format(player_name, _fmt_m(deal_price)) if txn_type == "buy" else "sold {} for {}".format(player_name, _fmt_m(deal_price))
 
-    progress = st.progress(0, text="Getting quick reaction...")
-
-    # --- Step 1: Quick Haiku comment ---
+    # Quick Haiku comment only
     try:
         quick_resp = client.messages.create(
             model="claude-haiku-4-5-20251001",
@@ -1441,67 +1438,6 @@ def run_post_transaction_analysis(txn_type, player_name, deal_price=0):
         st.session_state["post_txn_analysis"] = quick_resp.content[0].text
     except Exception:
         pass
-
-    progress.progress(33, text="Updating report...")
-
-    # --- Step 2: Sonnet incremental report update (if enough players) ---
-    if len(players) >= _min_players_for_analysis():
-        previous_report = storage.get_last_analysis(uid) or ""
-
-        profile = storage.get_profile(uid)
-        user_name = profile.get("first_name") or profile.get("nickname") or "the user"
-        yob = profile.get("year_of_birth")
-        import datetime as _dt
-        user_age = _dt.date.today().year - int(yob) if yob else "unknown"
-
-        custom_prompt = _analysis_prompt_override()
-        criteria = custom_prompt if custom_prompt else DEFAULT_ANALYSIS_PROMPT
-        criteria = criteria.replace("{max_squad}", str(_max_squad()))
-        criteria = criteria.replace("{lang}", "")
-        criteria = criteria.replace("{user_name}", str(user_name))
-        criteria = criteria.replace("{user_age}", str(user_age))
-
-        update_system = (
-            "You are a football squad analyst. Your evaluation criteria:\n\n"
-            "{criteria}\n\n"
-            "The user just {action}.\n\n"
-            "Below is the PREVIOUS analysis report. Update it to reflect this transaction. "
-            "Rules:\n"
-            "- Keep existing assessments for unaffected players\n"
-            "- Only modify sections directly impacted by this transaction\n"
-            "- Update budget numbers, squad composition counts, and overall assessment\n"
-            "- If a new player was bought, add them to the assessment\n"
-            "- If a player was sold, remove them from the assessment\n"
-            "- Update the squad rating if warranted\n"
-            "- Keep the same format and style\n"
-            "- FORMATTING: Each bullet point MUST be on its own separate line using '- ' prefix. "
-            "Never put multiple bullets on the same line. Use blank lines between sections.\n"
-            "{lang}"
-        ).replace("{criteria}", criteria).replace("{action}", action).replace("{lang}", lang_instruction)
-
-        update_msg = "PREVIOUS REPORT:\n{}\n\nUPDATED SQUAD DATA:\n{}".format(
-            previous_report, squad_text
-        )
-
-        try:
-            report_resp = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=2000,
-                system=update_system,
-                messages=[{"role": "user", "content": update_msg}],
-            )
-            new_report = report_resp.content[0].text
-            storage.save_last_analysis(uid, new_report)
-        except Exception:
-            pass
-
-        progress.progress(66, text="Updating player verdicts...")
-
-        # --- Step 3: Sonnet verdict update ---
-        _generate_and_save_verdicts()
-
-    progress.progress(100, text="Done!")
-    progress.empty()
 
 
 def squad_analysis_tab():
