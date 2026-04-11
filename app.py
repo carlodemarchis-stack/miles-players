@@ -2300,8 +2300,106 @@ def settings_dialog():
         st.rerun()
 
 
+@st.dialog("Change Admin PIN")
+def change_pin_dialog():
+    admin_uid = st.session_state.get("real_user_id") or _current_user_id()
+    profile = storage.get_profile(admin_uid)
+    current_pin = profile.get("admin_pin", "")
+
+    if current_pin:
+        st.caption("Enter your current PIN, then set a new one.")
+        old_pin = st.text_input("Current PIN", type="password", max_chars=4, key="old_pin")
+    else:
+        st.caption("No PIN set yet. Set a new 4-digit PIN.")
+        old_pin = ""
+
+    new_pin = st.text_input("New PIN (4 digits)", type="password", max_chars=4, key="new_pin")
+
+    c1, c2 = st.columns(2)
+    valid_new = new_pin and new_pin.isdigit() and len(new_pin) == 4
+    can_save = valid_new and (not current_pin or old_pin == current_pin)
+    if c1.button("💾 Save", use_container_width=True, disabled=not can_save):
+        if current_pin and old_pin != current_pin:
+            st.error("Current PIN is wrong")
+            return
+        storage.update_profile(admin_uid, {"admin_pin": new_pin})
+        st.success("PIN updated!")
+        st.rerun()
+    if c2.button("Cancel", use_container_width=True):
+        st.rerun()
+
+
+@st.dialog("Set Admin PIN (once)")
+def impersonate_pin_setup_dialog():
+    pending = st.session_state.get("pending_impersonate", {})
+    if not pending:
+        return
+    st.markdown("About to impersonate **{}**".format(pending.get("name", "?")))
+    st.caption("Set a 4-digit admin PIN. This is saved to your profile — you only set it once.")
+    pin = st.text_input("PIN (4 digits)", type="password", max_chars=4, key="imp_pin_set")
+    c1, c2 = st.columns(2)
+    if c1.button("✅ Save & start impersonating", use_container_width=True, disabled=not (pin and pin.isdigit() and len(pin) == 4)):
+        # Persist PIN in admin profile
+        admin_uid = _current_user_id()
+        storage.update_profile(admin_uid, {"admin_pin": pin})
+        # Save real identity + PIN in session
+        st.session_state["real_user_id"] = admin_uid
+        st.session_state["real_user_email"] = st.session_state["user"].get("email", "")
+        st.session_state["impersonate_pin"] = pin
+        # Swap user
+        st.session_state["user"] = {
+            "id": pending["uid"],
+            "email": pending["email"],
+            "display_name": pending["name"],
+        }
+        for k in ("players", "app_settings", "owned_map"):
+            st.session_state.pop(k, None)
+        st.session_state.pop("pending_impersonate", None)
+        st.rerun()
+    if c2.button("Cancel", use_container_width=True):
+        st.session_state.pop("pending_impersonate", None)
+        st.rerun()
+
+
+@st.dialog("Exit PIN required")
+def impersonate_pin_exit_dialog():
+    st.markdown("Enter the 4-digit PIN to exit impersonation.")
+    st.caption("Forgot the PIN? Close this browser tab to reset.")
+    pin = st.text_input("PIN", type="password", max_chars=4, key="imp_pin_exit")
+    c1, c2 = st.columns(2)
+    if c1.button("✅ Exit", use_container_width=True, disabled=not pin):
+        if pin == st.session_state.get("impersonate_pin"):
+            # Revert
+            real_uid = st.session_state.get("real_user_id")
+            real_email = st.session_state.get("real_user_email", "")
+            real_profile = storage.get_profile(real_uid)
+            st.session_state["user"] = {
+                "id": real_uid,
+                "email": real_email,
+                "display_name": _display_name(
+                    {"email": real_email}, real_profile
+                ),
+            }
+            for k in ("real_user_id", "real_user_email", "impersonate_pin",
+                      "players", "app_settings", "owned_map",
+                      "exit_impersonate_request"):
+                st.session_state.pop(k, None)
+            st.rerun()
+        else:
+            st.error("Wrong PIN")
+    if c2.button("Cancel", use_container_width=True):
+        st.session_state.pop("exit_impersonate_request", None)
+        st.rerun()
+
+
 @st.dialog("Manage Users", width="large")
 def manage_users_dialog():
+    # Admin-only (defense in depth)
+    real_uid = st.session_state.get("real_user_id") or _current_user_id()
+    if not storage.is_admin(real_uid):
+        st.error("Admin access required.")
+        return
+
     profiles = storage.list_all_profiles()
     if not profiles:
         st.info("No users found or function not available.")
@@ -2318,22 +2416,50 @@ def manage_users_dialog():
         is_prem = p.get("is_premium", False)
 
         with st.container(border=True):
-            c1, c2, c3, c4 = st.columns([3, 2, 1, 1])
+            c1, c2, c3, c4, c5 = st.columns([3, 1.5, 1, 1, 1])
             c1.markdown("**{}**".format(name))
             c1.caption("{} · {}".format(email, team or "no team"))
             new_admin = c2.checkbox(
                 "Admin", value=bool(is_adm), key="adm_{}".format(uid)
             )
             new_premium = c3.checkbox(
-                "Premium", value=bool(is_prem), key="prem_{}".format(uid)
+                "Prem", value=bool(is_prem), key="prem_{}".format(uid)
             )
-            if c4.button("💾", key="save_u_{}".format(uid)):
+            if c4.button("💾", key="save_u_{}".format(uid), help="Save changes"):
                 storage.admin_update_profile(uid, {
                     "is_admin": new_admin,
                     "is_premium": new_premium,
                 })
                 st.success("Updated {}".format(name))
                 st.rerun()
+            # Impersonate button
+            current_real = st.session_state.get("real_user_id", _current_user_id())
+            if uid != current_real:
+                if c5.button("👤", key="imp_{}".format(uid), help="Impersonate " + name):
+                    # Check if admin already has a PIN
+                    real_profile = storage.get_profile(current_real)
+                    saved_pin = real_profile.get("admin_pin", "")
+                    if saved_pin:
+                        # Start impersonation directly with saved PIN
+                        st.session_state["real_user_id"] = current_real
+                        st.session_state["real_user_email"] = st.session_state["user"].get("email", "")
+                        st.session_state["impersonate_pin"] = saved_pin
+                        st.session_state["user"] = {
+                            "id": uid,
+                            "email": email,
+                            "display_name": name,
+                        }
+                        for k in ("players", "app_settings", "owned_map"):
+                            st.session_state.pop(k, None)
+                        st.rerun()
+                    else:
+                        # First time — ask to set PIN
+                        st.session_state["pending_impersonate"] = {
+                            "uid": uid,
+                            "email": email,
+                            "name": name,
+                        }
+                        st.rerun()
 
 
 @st.dialog("Danger Zone")
@@ -2372,7 +2498,12 @@ def main():
 
     # Auth gate
     user = require_login()
-    st.session_state["user"] = user
+    # If impersonating, keep the impersonated user in session (don't overwrite)
+    if not st.session_state.get("real_user_id"):
+        st.session_state["user"] = user
+    else:
+        # We're impersonating — use the impersonated user, not the real one
+        user = st.session_state["user"]
 
     init_state()
     settings = load_settings()
@@ -2418,10 +2549,23 @@ def main():
         unsafe_allow_html=True,
     )
 
-    # Load profile
+    # Determine admin based on REAL user (not impersonated identity)
+    real_uid = st.session_state.get("real_user_id") or _current_user_id()
+    user_is_admin = storage.is_admin(real_uid)
+    impersonating = bool(st.session_state.get("real_user_id"))
+
+    # Load profile of the currently-acting user (impersonated or real)
     profile = storage.get_profile(_current_user_id())
-    user_is_admin = storage.is_admin(_current_user_id())
     label = _display_name(user, profile)
+
+    # Impersonation banner
+    if impersonating:
+        real_email = st.session_state.get("real_user_email", "admin")
+        b1, b2 = st.columns([5, 1])
+        b1.warning("👤 Impersonating **{}** 🔒".format(label))
+        if b2.button("🔑 Exit", use_container_width=True, key="revert_imp"):
+            st.session_state["exit_impersonate_request"] = True
+            st.rerun()
 
     # Header with language toggle + hamburger menu
     h1, h_lang, h2 = st.columns([6, 0.5, 0.5])
@@ -2454,6 +2598,9 @@ def main():
                 if st.button("👥 Manage Users", use_container_width=True, key="open_users"):
                     st.session_state["show_users_dialog"] = True
                     st.rerun()
+                if st.button("🔑 Change Admin PIN", use_container_width=True, key="open_pin"):
+                    st.session_state["show_pin_dialog"] = True
+                    st.rerun()
                 if st.button("⚠️ Danger Zone", use_container_width=True, key="open_danger"):
                     st.session_state["show_danger_dialog"] = True
                     st.rerun()
@@ -2463,9 +2610,14 @@ def main():
                     st.rerun()
             st.divider()
             if st.button("🚪 Sign out", use_container_width=True, key="signout_btn"):
-                from auth import _clear_session
-                _clear_session()
-                st.stop()
+                # If impersonating, require PIN to exit first
+                if st.session_state.get("real_user_id"):
+                    st.session_state["exit_impersonate_request"] = True
+                    st.rerun()
+                else:
+                    from auth import _clear_session
+                    _clear_session()
+                    st.stop()
 
     players = st.session_state.get("players", [])
 
@@ -2742,6 +2894,15 @@ def main():
 
     if st.session_state.pop("show_users_dialog", False):
         manage_users_dialog()
+
+    if st.session_state.pop("show_pin_dialog", False):
+        change_pin_dialog()
+
+    if st.session_state.get("pending_impersonate"):
+        impersonate_pin_setup_dialog()
+
+    if st.session_state.get("exit_impersonate_request"):
+        impersonate_pin_exit_dialog()
 
     if st.session_state.pop("show_danger_dialog", False):
         danger_zone_dialog()

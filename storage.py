@@ -408,7 +408,7 @@ def update_profile(user_id: str, fields: dict) -> dict:
     """Update profile fields (first_name, last_name, nickname)."""
     allowed = {
         "first_name", "last_name", "nickname", "team_name", "year_of_birth",
-        "selected_formation", "formation_overrides", "is_premium",
+        "selected_formation", "formation_overrides", "is_premium", "admin_pin",
     }
     payload = {k: v for k, v in fields.items() if k in allowed}
     if not payload:
