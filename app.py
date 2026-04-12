@@ -3248,13 +3248,31 @@ def global_stats_tab():
     if stats.get("user_activity"):
         st.divider()
         st.markdown("### 👤 User Activity")
-        for name, last_at, searches in stats["user_activity"]:
-            ts = ""
-            if last_at and isinstance(last_at, str) and len(last_at) > 16:
-                ts = last_at[:16].replace("T", " ")
-            st.caption("**{}** — last active: {} · {} searches".format(
-                name, ts or "never", searches
-            ))
+        rows = []
+        for u in stats["user_activity"]:
+            ts = u.get("last_active", "")
+            if isinstance(ts, str) and len(ts) > 16:
+                ts = ts[:16].replace("T", " ")
+            rows.append({
+                "User": u["name"],
+                "Players": u["players"],
+                "Value": _fmt_m(u["value"]),
+                "Searches": u["searches"],
+                "Last Active": ts or "—",
+            })
+        st.dataframe(
+            rows,
+            hide_index=True,
+            use_container_width=True,
+            height=(len(rows) + 1) * 38 + 2,
+            column_config={
+                "User": st.column_config.TextColumn("User", width="medium"),
+                "Players": st.column_config.NumberColumn("Players", width="small"),
+                "Value": st.column_config.TextColumn("Value", width="small"),
+                "Searches": st.column_config.NumberColumn("Searches", width="small"),
+                "Last Active": st.column_config.TextColumn("Last Active", width="medium"),
+            },
+        )
 
 
 @st.dialog("Manage Users", width="large")

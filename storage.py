@@ -1071,11 +1071,18 @@ def global_stats():
                 }.get(p.get("position", ""), "Other")
                 for p in players if p.get("position")
             ).most_common(),
-            # Activity
-            "user_activity": [
-                (_name(p), p.get("last_active_at", ""), int(p.get("search_count") or 0))
-                for p in profiles
-            ],
+            # Activity (sorted by last active, most recent first)
+            "user_activity": sorted(
+                [{
+                    "name": _name(p),
+                    "last_active": p.get("last_active_at", ""),
+                    "searches": int(p.get("search_count") or 0),
+                    "players": squad_by_user.get(p["user_id"], 0),
+                    "value": squad_value_by_user.get(p["user_id"], 0),
+                } for p in profiles],
+                key=lambda x: x["last_active"] or "",
+                reverse=True,
+            ),
         }
     except Exception as e:
         return {"error": str(e)}
