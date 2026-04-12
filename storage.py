@@ -137,6 +137,27 @@ def list_players(user_id: str) -> List[dict]:
     return res.data or []
 
 
+def get_player_by_tm_url(tm_url):
+    """Look up a player by TM URL from any user's squad. Returns player dict or None."""
+    if _use_local() or not tm_url:
+        return None
+    try:
+        def _q():
+            client = _supabase_client()
+            return (
+                client.table("players")
+                .select("*")
+                .eq("tm_url", tm_url)
+                .limit(1)
+                .maybe_single()
+                .execute()
+            )
+        res = _safe_execute(_q)
+        return res.data if res and res.data else None
+    except Exception:
+        return None
+
+
 def list_all_players() -> List[dict]:
     """Admin: list ALL players across all users."""
     if _use_local():
@@ -409,7 +430,7 @@ def update_profile(user_id: str, fields: dict) -> dict:
     allowed = {
         "first_name", "last_name", "nickname", "team_name", "year_of_birth",
         "selected_formation", "formation_overrides", "is_premium", "admin_pin",
-        "language", "search_count",
+        "language", "search_count", "tour_seen", "last_active_at",
     }
     payload = {k: v for k, v in fields.items() if k in allowed}
     if not payload:
@@ -897,6 +918,20 @@ def tm_cache_set(url, html):
         pass
 
 
+def touch_last_active(user_id):
+    """Update last_active_at to now."""
+    if _use_local():
+        return
+    try:
+        import datetime
+        client = _supabase_client()
+        client.table("user_profiles").update(
+            {"last_active_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+        ).eq("user_id", user_id).execute()
+    except Exception:
+        pass
+
+
 def increment_search_count(user_id):
     """Increment the per-user search counter by 1."""
     if _use_local():
@@ -931,9 +966,9 @@ def global_stats():
     try:
         client = _supabase_client()
         profiles = client.table("user_profiles").select(
-            "user_id, email, is_admin, is_premium, created_at, search_count, nickname, first_name, last_name"
+            "user_id, email, is_admin, is_premium, created_at, search_count, nickname, first_name, last_name, last_active_at"
         ).execute().data or []
-        players = client.table("players").select("id, user_id, market_value, name, league, club").execute().data or []
+        players = client.table("players").select("id, user_id, market_value, name, league, club, age, position").execute().data or []
         txns = client.table("transactions").select(
             "id, user_id, type, deal_value_m, player_name"
         ).execute().data or []
@@ -1024,9 +1059,23 @@ def global_stats():
             "avg_saved_per_user": len(saved_teams) / total_users if total_users else 0,
             "total_searches": total_searches,
             "top_searchers": top_searchers,
-            # Leagues and clubs
+            # Leagues, clubs, ages
             "leagues": Counter(p.get("league", "Unknown") or "Unknown" for p in players).most_common(15),
             "clubs": Counter(p.get("club", "Unknown") or "Unknown" for p in players).most_common(15),
+            "ages": [p.get("age") for p in players if p.get("age")],
+            "positions": Counter(p.get("position", "Unknown") or "Unknown" for p in players if p.get("position")).most_common(15),
+            "roles": Counter(
+                {"Goalkeeper": "GK", "Centre-Back": "DEF", "Right-Back": "DEF", "Left-Back": "DEF",
+                 "Defensive Midfield": "MID", "Central Midfield": "MID", "Attacking Midfield": "MID",
+                 "Right Winger": "ATT", "Left Winger": "ATT", "Second Striker": "ATT", "Centre-Forward": "ATT",
+                }.get(p.get("position", ""), "Other")
+                for p in players if p.get("position")
+            ).most_common(),
+            # Activity
+            "user_activity": [
+                (_name(p), p.get("last_active_at", ""), int(p.get("search_count") or 0))
+                for p in profiles
+            ],
         }
     except Exception as e:
         return {"error": str(e)}

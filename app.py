@@ -272,6 +272,8 @@ def _migrate_purchase_prices(players, settings):
 
 def init_state():
     if "players" not in st.session_state:
+        # Track activity once per session
+        storage.touch_last_active(_current_user_id())
         players = load_players()
         settings = load_settings()
         _migrate_ratings_if_needed(players, settings)
@@ -614,9 +616,25 @@ def transfermarkt_search_bar():
             if rc[0].button(r["name"], key="pick_{}".format(i), use_container_width=True):
                 try:
                     with st.spinner("Loading player..."):
-                        data = scrape_player(r["url"])
-                        ss = _fetch_sofascore(data.get("name", r["name"]))
-                        data.update(ss)
+                        # Check if player already exists in our DB (any user)
+                        existing = storage.get_player_by_tm_url(r["url"])
+                        if existing:
+                            # Serve from DB — no TM call needed
+                            data = dict(existing)
+                            data.pop("id", None)
+                            data.pop("user_id", None)
+                            data.pop("purchase_price_m", None)
+                            data.pop("verdict", None)
+                            data.pop("verdict_reason", None)
+                            data.pop("rating", None)
+                            data.pop("notes", None)
+                            data.pop("created_at", None)
+                            data.pop("updated_at", None)
+                        else:
+                            # New player — scrape from TM
+                            data = scrape_player(r["url"])
+                            ss = _fetch_sofascore(data.get("name", r["name"]))
+                            data.update(ss)
                     st.session_state.prefill = data
                     st.session_state.form_version += 1
                     st.session_state.search_results = []
@@ -721,7 +739,16 @@ def player_table(players):
         _r = "<div style='text-align:right'>{}</div>"
         c[6].markdown(_r.format(p.get("age", "") or ""), unsafe_allow_html=True)
         c[7].markdown(_r.format(p.get("market_value", "") or ""), unsafe_allow_html=True)
-        c[8].markdown(_r.format(p.get("sofascore_rating", "") or ""), unsafe_allow_html=True)
+        ss_val = p.get("sofascore_rating", "")
+        if ss_val:
+            ss_f = float(ss_val)
+            ss_color = "#4CAF50" if ss_f >= 7.5 else "#FFC107" if ss_f >= 7.0 else "#F44336"
+            c[8].markdown(
+                "<div style='text-align:right;color:{}'>{}</div>".format(ss_color, ss_val),
+                unsafe_allow_html=True,
+            )
+        else:
+            c[8].write("")
         c[9].markdown(_r.format(p.get("goals", 0)), unsafe_allow_html=True)
         c[10].markdown(_r.format(p.get("assists", 0)), unsafe_allow_html=True)
         c[11].markdown(_r.format(p.get("apps", 0)), unsafe_allow_html=True)
@@ -1067,18 +1094,21 @@ def transactions_tab():
     # Table
     for t in txns:
         is_buy = t.get("type") == "buy"
-        icon = "🛒" if is_buy else "💰"
-        color = "red" if is_buy else "green"
+        icon = "🛒" if is_buy else "💸"
+        color = "#F44336" if is_buy else "#4CAF50"
         ts = t.get("created_at", "")
         if isinstance(ts, str) and len(ts) > 16:
             ts = ts[:16].replace("T", " ")
         c1, c2, c3, c4 = st.columns([1.5, 3, 1.5, 1.5])
         c1.caption(ts)
-        c2.markdown("{} **{}** — {}".format(
-            icon, t.get("player_name", "?"), t.get("type", "?").upper()
-        ))
+        c2.markdown(
+            "{} **{}** — <span style='color:{}'>{}</span>".format(
+                icon, t.get("player_name", "?"), color, t.get("type", "?").upper()
+            ),
+            unsafe_allow_html=True,
+        )
         c3.markdown(
-            ":<b style='color:{}'>{}</b>".format(
+            "<b style='color:{}'>{}</b>".format(
                 color, _fmt_m(float(t.get("deal_value_m", 0)))
             ),
             unsafe_allow_html=True,
@@ -2811,6 +2841,143 @@ def impersonate_pin_exit_dialog():
         st.rerun()
 
 
+# --------------------------------------------------------------------------- #
+# Guided tour                                                                 #
+# --------------------------------------------------------------------------- #
+
+_TOUR_STEPS = [
+    {
+        "title": "Welcome! 👋",
+        "text": (
+            "This is your **Fantasy Football Manager**!\n\n"
+            "You have **€1 billion** to build a squad of **22 real players**.\n\n"
+            "Buy players at their real market value, set tactics, "
+            "and compete with friends. Let's get started!"
+        ),
+        "icon": "⚽",
+    },
+    {
+        "title": "🔎 Search & Buy",
+        "text": (
+            "Use the **search bar at the top** to find players on Transfermarkt.\n\n"
+            "Type at least 3 letters — results appear automatically.\n\n"
+            "Click a player name to buy them at market value."
+        ),
+        "icon": "🔎",
+    },
+    {
+        "title": "⚽ Your Squad",
+        "text": (
+            "The **Squad tab** shows all your players in a sortable table.\n\n"
+            "Click any player name to see their **full details**, "
+            "sell them, or refresh their data."
+        ),
+        "icon": "⚽",
+    },
+    {
+        "title": "🗺️ Squad Map",
+        "text": (
+            "The **Map tab** shows all your players on a football pitch, "
+            "positioned by their natural role.\n\n"
+            "You can also **generate a PNG image** of your squad to share!"
+        ),
+        "icon": "🗺️",
+    },
+    {
+        "title": "⚔️ Tactics",
+        "text": (
+            "Choose from **5 formations** (4-3-3, 4-2-3-1, etc.) and "
+            "assign players to each slot.\n\n"
+            "Green = exact match, Yellow = similar role, Red = out of position."
+        ),
+        "icon": "⚔️",
+    },
+    {
+        "title": "📊 Budget & Transactions",
+        "text": (
+            "Your budget updates with every buy and sell.\n\n"
+            "The **Transactions tab** tracks every deal. "
+            "Watch your **portfolio value** and **gain/loss** over time."
+        ),
+        "icon": "📊",
+    },
+    {
+        "title": "📋 AI Analysis",
+        "text": (
+            "Once you have **11+ players**, the **Analysis tab** gives you "
+            "a full squad report powered by Claude AI.\n\n"
+            "Each player gets a **verdict**: 🔒 Lock Him In → 🚨 Sell ASAP.\n\n"
+            "Use **Ask Claude** to chat about your squad."
+        ),
+        "icon": "🤖",
+    },
+    {
+        "title": "🏆 Save Your Team",
+        "text": (
+            "When your squad hits **22/22**, you can **save a snapshot**.\n\n"
+            "Saved teams appear in the **Teams tab** with a pitch view "
+            "and downloadable PNG image."
+        ),
+        "icon": "🏆",
+    },
+    {
+        "title": "You're ready! 🚀",
+        "text": (
+            "Start by **searching for a player** you love.\n\n"
+            "Build your dream squad, set your tactics, "
+            "and see how your team compares!\n\n"
+            "You can replay this tour anytime from the **❓** in the header."
+        ),
+        "icon": "🎉",
+    },
+]
+
+
+def _show_tour():
+    """Render the current tour step."""
+    step = st.session_state.get("tour_step", 0)
+    if step < 0 or step >= len(_TOUR_STEPS):
+        st.session_state.pop("tour_active", None)
+        st.session_state.pop("tour_step", None)
+        return
+
+    s = _TOUR_STEPS[step]
+    with st.container(border=True):
+        st.markdown("### {} {}".format(s["icon"], s["title"]))
+        st.markdown(s["text"])
+        st.caption("Step {} of {}".format(step + 1, len(_TOUR_STEPS)))
+
+        c1, c2, c3 = st.columns([1, 1, 1])
+        if step > 0:
+            if c1.button("◀ Back", use_container_width=True, key="tour_back"):
+                st.session_state["tour_step"] = step - 1
+                st.rerun()
+
+        if step < len(_TOUR_STEPS) - 1:
+            if c2.button("Next ▶", use_container_width=True, key="tour_next"):
+                st.session_state["tour_step"] = step + 1
+                st.rerun()
+        else:
+            if c2.button("✅ Got it!", use_container_width=True, key="tour_done"):
+                st.session_state.pop("tour_active", None)
+                st.session_state.pop("tour_step", None)
+                # Mark as seen in profile
+                try:
+                    storage.update_profile(_current_user_id(), {"tour_seen": "1"})
+                except Exception:
+                    pass
+                st.rerun()
+
+        if c3.button("Skip tour", use_container_width=True, key="tour_skip"):
+            st.session_state.pop("tour_active", None)
+            st.session_state.pop("tour_step", None)
+            try:
+                storage.update_profile(_current_user_id(), {"tour_seen": "1"})
+            except Exception:
+                pass
+            st.rerun()
+
+
 def global_stats_tab():
     stats = storage.global_stats()
     if not stats or "error" in stats:
@@ -2819,18 +2986,13 @@ def global_stats_tab():
 
     import pandas as pd
 
-    # Users
-    st.markdown("### 👥 Users")
-    u1, u2 = st.columns(2)
-    u1.metric("Total users", stats["total_users"])
-    u2.metric("Total players", stats["total_players"])
-
-    # Squads
-    st.markdown("### ⚽ Squads")
-    s1, s2, s3 = st.columns(3)
-    s1.metric("Avg squad", "{:.1f}".format(stats["avg_squad"]))
-    s2.metric("Top squad value", _fmt_m(stats["most_val_user_value"]))
-    s3.metric("🏆 Most valuable", stats["most_val_user_email"])
+    # Users + Squads on one line
+    u1, u2, u3, u4, u5 = st.columns(5)
+    u1.metric("👥 Users", stats["total_users"])
+    u2.metric("⚽ Players", stats["total_players"])
+    u3.metric("📊 Avg Squad", "{:.1f}".format(stats["avg_squad"]))
+    u4.metric("💰 Top Value", _fmt_m(stats["most_val_user_value"]))
+    u5.metric("🏆 Top", stats["most_val_user_email"])
 
     st.divider()
 
@@ -2862,6 +3024,77 @@ def global_stats_tab():
                 ),
                 use_container_width=True,
             )
+
+    # Age, Role, Position distributions
+    ages = stats.get("ages", [])
+    roles = stats.get("roles", [])
+    positions = stats.get("positions", [])
+
+    if ages or roles or positions:
+        st.divider()
+        ac1, ac2, ac3 = st.columns(3)
+
+        with ac1:
+            st.markdown("### 🎂 Age")
+            if ages:
+                df_age = pd.DataFrame({"Age": ages})
+                st.altair_chart(
+                    alt.Chart(df_age).mark_bar(color="#FFD700").encode(
+                        x=alt.X("Age:Q", bin=alt.Bin(step=2), title="Age"),
+                        y=alt.Y("count()", title="Players"),
+                    ),
+                    use_container_width=True,
+                )
+
+        with ac2:
+            st.markdown("### 🏷️ Role")
+            if roles:
+                role_order = ["GK", "DEF", "MID", "ATT"]
+                role_colors = {"GK": "#FFC107", "DEF": "#4CAF50", "MID": "#2196F3", "ATT": "#F44336"}
+                df_role = pd.DataFrame(roles, columns=["Role", "Count"])
+                st.altair_chart(
+                    alt.Chart(df_role).mark_arc(innerRadius=40).encode(
+                        theta=alt.Theta("Count:Q"),
+                        color=alt.Color("Role:N",
+                            scale=alt.Scale(
+                                domain=list(role_colors.keys()),
+                                range=list(role_colors.values()),
+                            ),
+                            sort=role_order,
+                        ),
+                        tooltip=["Role", "Count"],
+                    ),
+                    use_container_width=True,
+                )
+
+        with ac3:
+            st.markdown("### 📍 Position")
+            if positions:
+                # Map each position to its role color
+                pos_to_role = {
+                    "Goalkeeper": "GK", "Centre-Back": "DEF", "Right-Back": "DEF", "Left-Back": "DEF",
+                    "Defensive Midfield": "MID", "Central Midfield": "MID", "Attacking Midfield": "MID",
+                    "Right Winger": "ATT", "Left Winger": "ATT", "Second Striker": "ATT", "Centre-Forward": "ATT",
+                }
+                role_colors_map = {"GK": "#FFC107", "DEF": "#4CAF50", "MID": "#2196F3", "ATT": "#F44336", "Other": "#888"}
+                df_pos = pd.DataFrame(positions, columns=["Position", "Count"])
+                df_pos["Role"] = df_pos["Position"].map(lambda p: pos_to_role.get(p, "Other"))
+                df_pos["Color"] = df_pos["Role"].map(lambda r: role_colors_map.get(r, "#888"))
+
+                all_positions = df_pos["Position"].tolist()
+                all_colors = df_pos["Color"].tolist()
+
+                st.altair_chart(
+                    alt.Chart(df_pos).mark_bar().encode(
+                        x=alt.X("Count:Q", scale=alt.Scale(domain=[0, int(df_pos["Count"].max()) + 1]), title="Players"),
+                        y=alt.Y("Position:N", sort="-x", title=None),
+                        color=alt.Color("Position:N",
+                            scale=alt.Scale(domain=all_positions, range=all_colors),
+                            legend=None,
+                        ),
+                    ),
+                    use_container_width=True,
+                )
 
     st.divider()
 
@@ -2910,6 +3143,18 @@ def global_stats_tab():
                 "{} ({})".format(e, c) for e, c in stats["top_searchers"] if c > 0
             ))
 
+    # User activity
+    if stats.get("user_activity"):
+        st.divider()
+        st.markdown("### 👤 User Activity")
+        for name, last_at, searches in stats["user_activity"]:
+            ts = ""
+            if last_at and isinstance(last_at, str) and len(last_at) > 16:
+                ts = last_at[:16].replace("T", " ")
+            st.caption("**{}** — last active: {} · {} searches".format(
+                name, ts or "never", searches
+            ))
+
 
 @st.dialog("Manage Users", width="large")
 def manage_users_dialog():
@@ -2954,9 +3199,17 @@ def manage_users_dialog():
         is_adm = p.get("is_admin", False)
         is_prem = p.get("is_premium", False)
 
+        last_at = p.get("last_active_at", "")
+        if isinstance(last_at, str) and len(last_at) > 16:
+            last_at = last_at[:16].replace("T", " ")
+        elif not last_at:
+            last_at = "never"
+
         c1, c2, c3, c4, c5, c6 = st.columns([3.5, 0.8, 0.8, 0.5, 0.5, 0.5])
         c1.markdown(
-            "**{}** · _{}_ · <small><code>{}</code></small>".format(name, team or "no team", email),
+            "**{}** · _{}_ · <small><code>{}</code></small> · <small>🕐 {}</small>".format(
+                name, team or "no team", email, last_at
+            ),
             unsafe_allow_html=True,
         )
         new_admin = c2.checkbox(
@@ -3086,28 +3339,61 @@ def main():
     init_state()
     settings = load_settings()
 
-    # Style name-column buttons as inline text links
+    # Global UI styles
     st.markdown(
         """
         <style>
+        /* === ACCENT COLOR: Gold (#FFD700) throughout === */
+        :root {
+            --accent: #FFD700;
+            --accent-dim: #B8960F;
+            --link: #5BA8F5;
+            --link-hover: #8CC8FF;
+            --green: #4CAF50;
+            --yellow: #FFC107;
+            --red: #F44336;
+        }
+
+        /* Tab bar: background strip + bigger text */
+        [data-baseweb="tab-list"] {
+            background: rgba(255,255,255,0.04) !important;
+            border-radius: 8px !important;
+            padding: 4px 8px !important;
+            border-bottom: 2px solid rgba(255,255,255,0.08) !important;
+        }
+        button[data-baseweb="tab"] {
+            font-size: 0.95rem !important;
+            font-weight: 500 !important;
+            padding: 8px 16px !important;
+        }
+        /* Active tab: gold underline + brighter text */
+        button[data-baseweb="tab"][aria-selected="true"] {
+            border-bottom-color: var(--accent) !important;
+            color: var(--accent) !important;
+            font-weight: 700 !important;
+        }
+
+        /* === TABLE: Name column as clean links === */
         div[class*="st-key-tbl_name_"] button {
             background: transparent !important;
             border: none !important;
             padding: 0.15rem 0 !important;
             box-shadow: none !important;
-            color: #1f77b4 !important;
+            color: var(--link) !important;
             font-weight: 500 !important;
             text-align: left !important;
             justify-content: flex-start !important;
             min-height: 0 !important;
         }
         div[class*="st-key-tbl_name_"] button:hover {
-            color: #0b5394 !important;
+            color: var(--link-hover) !important;
             text-decoration: underline !important;
         }
         div[class*="st-key-tbl_name_"] button:focus {
             box-shadow: none !important;
         }
+
+        /* === TABLE: Header buttons compact === */
         div[class*="st-key-hdr_"] button {
             background: transparent !important;
             border: none !important;
@@ -3118,9 +3404,60 @@ def main():
             min-height: 0 !important;
             white-space: nowrap !important;
             line-height: 1.2 !important;
+            color: var(--accent-dim) !important;
         }
         div[class*="st-key-hdr_"] button:hover {
             text-decoration: underline !important;
+            color: var(--accent) !important;
+        }
+
+        /* === TACTICS: Disable text input in dropdowns === */
+        div[class*="st-key-tac_"] input[role="combobox"] {
+            pointer-events: none !important;
+            caret-color: transparent !important;
+        }
+        div[class*="st-key-tac_"] [data-baseweb="select"] > div {
+            cursor: pointer !important;
+        }
+
+        /* === TYPOGRAPHY: Better hierarchy === */
+        h1 {
+            letter-spacing: -0.02em !important;
+        }
+        .stMetric label {
+            font-size: 0.75rem !important;
+            text-transform: uppercase !important;
+            letter-spacing: 0.05em !important;
+            color: #888 !important;
+        }
+        .stMetric [data-testid="stMetricValue"] {
+            font-weight: 700 !important;
+        }
+
+        /* === ANIMATIONS: Subtle fade-in for containers === */
+        [data-testid="stVerticalBlock"] > div {
+            animation: fadeIn 0.3s ease-in;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Pulse animation for full squad badge */
+        .squad-full-pulse {
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        /* === SPACING: More breathing room === */
+        [data-testid="stHorizontalBlock"] {
+            gap: 0.75rem !important;
+        }
+        .stDivider {
+            margin: 1.2rem 0 !important;
         }
         </style>
         """,
@@ -3149,11 +3486,22 @@ def main():
             st.session_state["exit_impersonate_request"] = True
             st.rerun()
 
-    # Header with language toggle + hamburger menu
-    h1, h_lang, h2 = st.columns([6, 0.5, 0.5])
+    # Auto-start tour for first-time users
+    if not profile.get("tour_seen") and not st.session_state.get("tour_active"):
+        st.session_state["tour_active"] = True
+        st.session_state["tour_step"] = 0
+
+    # Header with language toggle + help + hamburger menu
+    h1, h_lang, h_help, h2 = st.columns([20, 2, 2, 2])
     with h1:
         team_name = profile.get("team_name") or "My Football Stars"
         st.title("⚽ {}".format(team_name))
+    with h_help:
+        st.write("")
+        if st.button("❓", key="show_tour_header", use_container_width=True):
+            st.session_state["tour_active"] = True
+            st.session_state["tour_step"] = 0
+            st.rerun()
     with h_lang:
         st.write("")
         cur_lang = _get_analysis_lang()
@@ -3210,6 +3558,10 @@ def main():
         )
     owned_map = st.session_state.owned_map
 
+    # --- Guided tour ---
+    if st.session_state.get("tour_active"):
+        _show_tour()
+
     # --- Post-transaction analysis (shown once after buy/sell) ---
     post_analysis = st.session_state.pop("post_txn_analysis", None)
     if post_analysis:
@@ -3240,16 +3592,30 @@ def main():
     net_invested = budget_info["total_buys"] - budget_info["total_sells"]
     gain_loss = portfolio - net_invested
 
-    b1, b2, b3, b4, b5, b6 = st.columns(6)
-    b1.metric("Budget", _fmt_m(budget_info["initial"]))
-    b2.metric("Bought", _fmt_m(budget_info["total_buys"]))
-    b3.metric("Sold", _fmt_m(budget_info["total_sells"]))
-    b4.metric("Cash", _fmt_m(budget_info["cash"]))
-    b5.metric("Portfolio", _fmt_m(portfolio))
+    cash = budget_info["cash"]
+    cash_pct = cash / budget_info["initial"] * 100 if budget_info["initial"] else 0
+    cash_color = "#4CAF50" if cash_pct > 30 else "#FFC107" if cash_pct > 10 else "#F44336"
+    gain_color = "#4CAF50" if gain_loss >= 0 else "#F44336"
     gain_str = "+{}".format(_fmt_m(gain_loss)) if gain_loss >= 0 else _fmt_m(gain_loss)
-    b6.metric(
-        "Gain/Loss", gain_str,
-        delta_color="normal" if gain_loss >= 0 else "inverse",
+
+    b1, b2, b3, b4, b5, b6 = st.columns(6)
+    b1.metric("💰 Budget", _fmt_m(budget_info["initial"]))
+    b2.metric("🛒 Bought", _fmt_m(budget_info["total_buys"]))
+    b3.metric("💸 Sold", _fmt_m(budget_info["total_sells"]))
+    b4.markdown(
+        "<small style='color:#888;text-transform:uppercase;letter-spacing:0.05em'>💵 Cash</small><br>"
+        "<span style='font-size:1.8rem;font-weight:700;color:{}'>{}</span>".format(
+            cash_color, _fmt_m(cash)
+        ),
+        unsafe_allow_html=True,
+    )
+    b5.metric("📊 Portfolio", _fmt_m(portfolio))
+    b6.markdown(
+        "<small style='color:#888;text-transform:uppercase;letter-spacing:0.05em'>📈 Gain/Loss</small><br>"
+        "<span style='font-size:1.8rem;font-weight:700;color:{}'>{}</span>".format(
+            gain_color, gain_str
+        ),
+        unsafe_allow_html=True,
     )
 
     if players:
@@ -3274,14 +3640,32 @@ def main():
         )
         age_players = [p for p in players if p.get("age")]
         avg_age = sum(p["age"] for p in age_players) / len(age_players) if age_players else 0
+        squad_label = "{}/{}".format(len(players), _max_squad())
         m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
-        m1.metric("Players", "{}/{}".format(len(players), _max_squad()))
-        m2.metric("GK", counts["GK"])
-        m3.metric("DEF", counts["DEF"])
-        m4.metric("MID", counts["MID"])
-        m5.metric("ATT", counts["ATT"])
-        m6.metric("Avg Age", "{:.1f}".format(avg_age) if avg_age else "-")
-        m7.metric("📈 Avg SofaScore", "{:.2f}".format(avg_ss) if avg_ss else "-")
+        # Pulse effect when squad is full
+        if len(players) >= _max_squad():
+            m1.markdown(
+                "<small style='color:#888;text-transform:uppercase;letter-spacing:0.05em'>👥 Squad</small><br>"
+                "<span class='squad-full-pulse' style='font-size:1.8rem;font-weight:700;color:#FFD700'>{}</span>".format(squad_label),
+                unsafe_allow_html=True,
+            )
+        else:
+            m1.metric("👥 Squad", squad_label)
+        m2.metric("🧤 GK", counts["GK"])
+        m3.metric("🛡️ DEF", counts["DEF"])
+        m4.metric("⚙️ MID", counts["MID"])
+        m5.metric("⚔️ ATT", counts["ATT"])
+        m6.metric("🎂 Avg Age", "{:.1f}".format(avg_age) if avg_age else "-")
+
+        # Color-code avg SofaScore
+        ss_color = "#4CAF50" if avg_ss >= 7.5 else "#FFC107" if avg_ss >= 7.0 else "#F44336" if avg_ss else "#888"
+        m7.markdown(
+            "<small style='color:#888;text-transform:uppercase;letter-spacing:0.05em'>📈 Avg SofaScore</small><br>"
+            "<span style='font-size:1.8rem;font-weight:700;color:{}'>{}</span>".format(
+                ss_color, "{:.2f}".format(avg_ss) if avg_ss else "-"
+            ),
+            unsafe_allow_html=True,
+        )
 
     st.divider()
 
