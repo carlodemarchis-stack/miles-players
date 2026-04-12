@@ -3673,13 +3673,8 @@ def main():
     st.divider()
 
     # --- Tabs (persist selection via query params) ---
-    user_premium = storage.is_premium(_current_user_id()) or user_is_admin
-    if user_premium:
-        _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "🏆 Teams", "📊 Transactions", "📋 Analysis", "🤖 Ask Claude", "💬 Ask ChatGPT", "📊 Stats"]
-        _TAB_KEYS = ["squad", "map", "tactics", "teams", "transactions", "analysis", "ask", "chatgpt", "stats"]
-    else:
-        _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "🏆 Teams", "📊 Transactions", "📋 Analysis", "💬 Ask ChatGPT", "📊 Stats"]
-        _TAB_KEYS = ["squad", "map", "tactics", "teams", "transactions", "analysis", "chatgpt", "stats"]
+    _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "🏆 Teams", "📊 Transactions", "📋 Analysis", "💬 Ask ChatGPT", "📊 Stats"]
+    _TAB_KEYS = ["squad", "map", "tactics", "teams", "transactions", "analysis", "chatgpt", "stats"]
 
     # Inject JS to track tab clicks and update URL query param
     import streamlit.components.v1 as _components
@@ -3730,7 +3725,6 @@ def main():
     tab_teams = tab_idx["teams"]
     tab_transactions = tab_idx["transactions"]
     tab_report = tab_idx["analysis"]
-    tab_ask = tab_idx.get("ask")
     tab_gpt = tab_idx["chatgpt"]
     tab_stats = tab_idx["stats"]
 
@@ -3830,9 +3824,6 @@ def main():
                     _generate_and_save_verdicts()
                     st.rerun()
 
-    if tab_ask:
-        with tab_ask:
-            squad_analysis_tab()
 
     with tab_gpt:
         chatgpt_tab(players)
