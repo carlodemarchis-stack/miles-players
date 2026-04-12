@@ -409,7 +409,7 @@ def update_profile(user_id: str, fields: dict) -> dict:
     allowed = {
         "first_name", "last_name", "nickname", "team_name", "year_of_birth",
         "selected_formation", "formation_overrides", "is_premium", "admin_pin",
-        "language",
+        "language", "search_count",
     }
     payload = {k: v for k, v in fields.items() if k in allowed}
     if not payload:
@@ -895,6 +895,141 @@ def tm_cache_set(url, html):
         client.table("tm_cache").upsert(payload).execute()
     except Exception:
         pass
+
+
+def increment_search_count(user_id):
+    """Increment the per-user search counter by 1."""
+    if _use_local():
+        raw = _local_user_block(user_id)
+        block = raw["users"][user_id]
+        block["search_count"] = int(block.get("search_count", 0)) + 1
+        _local_save(raw)
+        return
+    try:
+        client = _supabase_client()
+        current = (
+            client.table("user_profiles")
+            .select("search_count")
+            .eq("user_id", user_id)
+            .maybe_single()
+            .execute()
+        )
+        cur = 0
+        if current and current.data:
+            cur = int(current.data.get("search_count") or 0)
+        client.table("user_profiles").update(
+            {"search_count": cur + 1}
+        ).eq("user_id", user_id).execute()
+    except Exception:
+        pass
+
+
+def global_stats():
+    """Admin: return global stats across all users."""
+    if _use_local():
+        return {}
+    try:
+        client = _supabase_client()
+        profiles = client.table("user_profiles").select(
+            "user_id, email, is_admin, is_premium, created_at, search_count, nickname, first_name, last_name"
+        ).execute().data or []
+        players = client.table("players").select("id, user_id, market_value, name, league, club").execute().data or []
+        txns = client.table("transactions").select(
+            "id, user_id, type, deal_value_m, player_name"
+        ).execute().data or []
+        saved_teams = client.table("saved_teams").select("id, user_id").execute().data or []
+
+        def _mv(s):
+            s = (s or "").lower().strip()
+            num = "".join(c for c in s if c.isdigit() or c == ".")
+            try:
+                v = float(num)
+            except ValueError:
+                return 0.0
+            if "k" in s:
+                v /= 1000.0
+            return v
+
+        # Users
+        total_users = len(profiles)
+        admins = sum(1 for p in profiles if p.get("is_admin"))
+        premiums = sum(1 for p in profiles if p.get("is_premium"))
+
+        # Squads
+        squad_by_user = {}
+        squad_value_by_user = {}
+        for p in players:
+            uid = p["user_id"]
+            squad_by_user[uid] = squad_by_user.get(uid, 0) + 1
+            squad_value_by_user[uid] = squad_value_by_user.get(uid, 0) + _mv(p.get("market_value"))
+
+        total_players = len(players)
+        avg_squad = total_players / total_users if total_users else 0
+        most_val_user = max(squad_value_by_user.items(), key=lambda x: x[1], default=(None, 0))
+
+        # Transactions
+        buys = [t for t in txns if t.get("type") == "buy"]
+        sells = [t for t in txns if t.get("type") == "sell"]
+        total_buys_val = sum(float(t.get("deal_value_m") or 0) for t in buys)
+        total_sells_val = sum(float(t.get("deal_value_m") or 0) for t in sells)
+
+        biggest_buy = max(buys, key=lambda t: float(t.get("deal_value_m") or 0), default=None)
+        biggest_sell = max(sells, key=lambda t: float(t.get("deal_value_m") or 0), default=None)
+
+        # Most-bought player
+        from collections import Counter
+        player_counts = Counter(t.get("player_name", "?") for t in buys)
+        top_bought = player_counts.most_common(5)
+
+        # Saved teams
+        teams_by_user = {}
+        for t in saved_teams:
+            uid = t["user_id"]
+            teams_by_user[uid] = teams_by_user.get(uid, 0) + 1
+
+        # Map user_id to display name (nickname > first+last > email)
+        def _name(p):
+            nick = p.get("nickname", "")
+            fn = p.get("first_name", "")
+            ln = p.get("last_name", "")
+            full = "{} {}".format(fn, ln).strip()
+            return nick or full or p.get("email", "?")
+
+        uid_to_email = {p["user_id"]: _name(p) for p in profiles}
+
+        # Searches
+        total_searches = sum(int(p.get("search_count") or 0) for p in profiles)
+        top_searchers = sorted(
+            [(_name(p), int(p.get("search_count") or 0)) for p in profiles],
+            key=lambda x: -x[1],
+        )[:5]
+
+        return {
+            "total_users": total_users,
+            "admins": admins,
+            "premiums": premiums,
+            "total_players": total_players,
+            "avg_squad": avg_squad,
+            "most_val_user_email": uid_to_email.get(most_val_user[0], "?"),
+            "most_val_user_value": most_val_user[1],
+            "total_txns": len(txns),
+            "total_buys": len(buys),
+            "total_sells": len(sells),
+            "total_buys_val": total_buys_val,
+            "total_sells_val": total_sells_val,
+            "biggest_buy": biggest_buy,
+            "biggest_sell": biggest_sell,
+            "top_bought": top_bought,
+            "total_saved_teams": len(saved_teams),
+            "avg_saved_per_user": len(saved_teams) / total_users if total_users else 0,
+            "total_searches": total_searches,
+            "top_searchers": top_searchers,
+            # Leagues and clubs
+            "leagues": Counter(p.get("league", "Unknown") or "Unknown" for p in players).most_common(15),
+            "clubs": Counter(p.get("club", "Unknown") or "Unknown" for p in players).most_common(15),
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def tm_cache_stats():

@@ -1,3 +1,4 @@
+import io
 import json
 import time
 from pathlib import Path
@@ -359,11 +360,22 @@ def buy_player_form():
             len(st.session_state.players), _max_squad()
         ))
 
+    # Duplicate check: already owned?
+    tm_url = data.get("tm_url", "")
+    already_owned = False
+    if tm_url:
+        for p in st.session_state.players:
+            if p.get("tm_url") == tm_url:
+                already_owned = True
+                break
+    if already_owned:
+        st.error("You already own **{}**! Can't buy twice.".format(data.get("name", "this player")))
+
     deal_price = market_val
     with st.form(form_key, clear_on_submit=True):
         st.markdown("**Deal price: {}**".format(_fmt_m(deal_price)))
-        rating = st.slider("Miles's rating (0-100)", 0, 100, 70)
-        notes = st.text_area("Miles's notes", value="")
+        rating = 70  # default, not shown in UI
+        notes = st.text_area("Notes", value="")
 
         after_cash = cash - deal_price
         if deal_price > cash:
@@ -377,7 +389,7 @@ def buy_player_form():
         submitted = col_a.form_submit_button(
             "🛒 Buy for {}".format(_fmt_m(deal_price)),
             use_container_width=True,
-            disabled=(deal_price > cash or squad_full),
+            disabled=(deal_price > cash or squad_full or already_owned),
         )
         cancelled = col_b.form_submit_button("Cancel", use_container_width=True)
 
@@ -386,7 +398,7 @@ def buy_player_form():
             st.session_state.form_version += 1
             st.rerun()
 
-        if submitted and deal_price <= cash and not squad_full:
+        if submitted and deal_price <= cash and not squad_full and not already_owned:
             if not data.get("name"):
                 st.error("Missing player name.")
                 return
@@ -407,6 +419,7 @@ def buy_player_form():
             })
             st.session_state.players.append(saved)
             st.session_state.pop("owned_map", None)  # refresh ownership cache
+            st.session_state.pop("squad_map_png", None)  # invalidate cached image
             st.session_state.prefill = {}
             st.session_state.form_version += 1
             with st.spinner("✅ Bought {}! Updating analysis...".format(data["name"])):
@@ -441,10 +454,8 @@ def player_form(existing=None):
         st.caption("To update TM data, use 🔄 Refresh in the details.")
 
     with st.form(form_key, clear_on_submit=False):
-        rating = st.slider(
-            "Miles's rating (0-100)", 0, 100, int(existing.get("rating") or 70)
-        )
-        notes = st.text_area("Miles's notes", value=existing.get("notes", ""))
+        rating = int(existing.get("rating") or 70)  # preserved, not editable
+        notes = st.text_area("Notes", value=existing.get("notes", ""))
         col_a, col_b = st.columns([1, 1])
         submitted = col_a.form_submit_button("💾 Update", use_container_width=True)
         cancelled = col_b.form_submit_button("Cancel", use_container_width=True)
@@ -515,6 +526,7 @@ def sell_player_dialog(p):
             x for x in st.session_state.players if x["id"] != p["id"]
         ]
         st.session_state.pop("owned_map", None)
+        st.session_state.pop("squad_map_png", None)  # invalidate cached image
         with st.spinner("✅ Sold {}! Updating analysis...".format(p["name"])):
             run_post_transaction_analysis("sell", p["name"], sell_price)
         st.rerun()
@@ -543,6 +555,7 @@ def transfermarkt_search_bar():
             try:
                 with st.spinner("Searching..."):
                     st.session_state.search_results = search_player(name)
+                storage.increment_search_count(_current_user_id())
                 if not st.session_state.search_results:
                     st.warning("No players found.")
             except Exception as e:
@@ -624,7 +637,7 @@ def transfermarkt_search_bar():
 # Table + Cards                                                               #
 # --------------------------------------------------------------------------- #
 
-TABLE_WIDTHS = [0.4, 0.3, 2.0, 1.4, 1.0, 1.4, 0.5, 1.0, 0.5, 0.5, 0.4, 0.4, 0.5, 0.5, 0.3, 0.3]
+TABLE_WIDTHS = [0.4, 0.3, 2.0, 1.4, 1.0, 1.4, 0.5, 1.0, 0.5, 0.4, 0.4, 0.5, 0.5, 0.3, 0.3]
 TABLE_COLS = [
     ("", None, False),
     ("", None, False),
@@ -634,7 +647,6 @@ TABLE_COLS = [
     ("Pos", "position", False),
     ("Age", "age", True),
     ("Value", "market_value", True),
-    ("⭐", "rating", True),
     ("📈", "sofascore_rating", True),
     ("G", "goals", True),
     ("A", "assists", True),
@@ -709,33 +721,32 @@ def player_table(players):
         _r = "<div style='text-align:right'>{}</div>"
         c[6].markdown(_r.format(p.get("age", "") or ""), unsafe_allow_html=True)
         c[7].markdown(_r.format(p.get("market_value", "") or ""), unsafe_allow_html=True)
-        c[8].markdown(_r.format(p.get("rating", "") or ""), unsafe_allow_html=True)
-        c[9].markdown(_r.format(p.get("sofascore_rating", "") or ""), unsafe_allow_html=True)
-        c[10].markdown(_r.format(p.get("goals", 0)), unsafe_allow_html=True)
-        c[11].markdown(_r.format(p.get("assists", 0)), unsafe_allow_html=True)
-        c[12].markdown(_r.format(p.get("apps", 0)), unsafe_allow_html=True)
+        c[8].markdown(_r.format(p.get("sofascore_rating", "") or ""), unsafe_allow_html=True)
+        c[9].markdown(_r.format(p.get("goals", 0)), unsafe_allow_html=True)
+        c[10].markdown(_r.format(p.get("assists", 0)), unsafe_allow_html=True)
+        c[11].markdown(_r.format(p.get("apps", 0)), unsafe_allow_html=True)
         verdict = p.get("verdict", "")
         if verdict:
             emoji = verdict.split(" ")[0]
-            c[13].markdown(
+            c[12].markdown(
                 "<span title='{}' style='font-size:1.2em'>{}</span>".format(verdict, emoji),
                 unsafe_allow_html=True,
             )
         else:
-            c[13].write("")
+            c[12].write("")
         tm_url = p.get("tm_url", "")
         others = owned_map.get(tm_url, []) if tm_url else []
-        # Col 14: TM link
+        # Col 13: TM link
         if tm_url:
-            c[14].markdown(
+            c[13].markdown(
                 "<a href='{}' target='_blank' style='text-decoration:none'>🔗</a>".format(tm_url),
                 unsafe_allow_html=True,
             )
         else:
-            c[14].write("")
-        # Col 15: ownership indicator
+            c[13].write("")
+        # Col 14: ownership indicator
         if others:
-            c[15].write("⚡")
+            c[14].write("⚡")
 
 
 def player_card(p):
@@ -773,14 +784,13 @@ def player_card(p):
                 st.write(" · ".join(meta_line))
 
             st.write(
-                "⭐ **{}/100**  |  ⚽ {} G · 🅰️ {} A · 👕 {} apps".format(
-                    p.get("rating", "-"), p.get("goals", 0),
-                    p.get("assists", 0), p.get("apps", 0)
+                "⚽ {} G · 🅰️ {} A · 👕 {} apps".format(
+                    p.get("goals", 0), p.get("assists", 0), p.get("apps", 0)
                 )
             )
 
             if p.get("notes"):
-                with st.expander("Miles's notes"):
+                with st.expander("Notes"):
                     st.write(p["notes"])
 
             b1, _ = st.columns([1, 4])
@@ -852,9 +862,8 @@ def player_detail_dialog(p):
         current = _mv_num(p)
         gain = current - purchase
         gain_str = "+{}".format(_fmt_m(gain)) if gain >= 0 else _fmt_m(gain)
-        stats_md = "⭐ **{}/100**  ·  👕 {} apps  ·  ⚽ {} G  ·  🅰️ {} A".format(
-            p.get("rating", "-"), p.get("apps", 0),
-            p.get("goals", 0), p.get("assists", 0)
+        stats_md = "👕 {} apps  ·  ⚽ {} G  ·  🅰️ {} A".format(
+            p.get("apps", 0), p.get("goals", 0), p.get("assists", 0)
         )
         if p.get("sofascore_rating"):
             stats_md += "  ·  📈 SofaScore: **{}**".format(p["sofascore_rating"])
@@ -926,6 +935,8 @@ def player_detail_dialog(p):
         st.session_state.players = [
             x for x in st.session_state.players if x["id"] != p["id"]
         ]
+        st.session_state.pop("squad_map_png", None)
+        st.session_state.pop("owned_map", None)
         st.rerun()
 
 
@@ -1024,6 +1035,7 @@ def refresh_all_players():
 
     # Reload current user's players
     st.session_state.players = load_players()
+    st.session_state.pop("squad_map_png", None)
     if st.button("Close", use_container_width=True):
         st.rerun()
 
@@ -1727,6 +1739,33 @@ def _save_user_formation_data(formation_name, overrides):
     })
 
 
+def _slot_change_callback(selected_formation):
+    """Called when a slot selectbox changes — swap players and save."""
+    saved_formation, saved_overrides = _get_user_formation_data()
+    overrides = dict(saved_overrides.get(selected_formation, {}))
+
+    # Collect all current selections from widgets
+    # Keys like "tac_{formation}_{slot_idx}" store option_id (player_id string or None)
+    changed = False
+    for key in list(st.session_state.keys()):
+        prefix = "tac_{}_".format(selected_formation)
+        if key.startswith(prefix):
+            try:
+                slot_idx = int(key[len(prefix):])
+            except ValueError:
+                continue
+            new_id = st.session_state[key]
+            old_id = overrides.get(str(slot_idx))
+            if new_id != old_id:
+                overrides[str(slot_idx)] = new_id
+                changed = True
+
+    if changed:
+        new_overrides = dict(saved_overrides)
+        new_overrides[selected_formation] = overrides
+        _save_user_formation_data(selected_formation, new_overrides)
+
+
 def tactics_tab(players):
     formations = storage.get_formations()
     if not formations:
@@ -1742,24 +1781,46 @@ def tactics_tab(players):
         default_idx = names.index(saved_formation)
     selected = st.radio(
         "Formation", names, index=default_idx,
-        horizontal=True, label_visibility="collapsed",
+        horizontal=True, label_visibility="collapsed", key="tac_formation_select",
     )
+
+    # Save formation selection if changed
+    if selected != saved_formation:
+        _save_user_formation_data(selected, saved_overrides)
+        # Clear stale slot widget state from previous formation
+        for k in list(st.session_state.keys()):
+            if k.startswith("tac_") and not k.startswith("tac_formation_select"):
+                del st.session_state[k]
+        st.rerun()
+
     formation = next(f for f in formations if f["name"] == selected)
 
-    # Load overrides for this formation
+    # Build final assignments: start with auto, then apply overrides
     overrides = saved_overrides.get(selected, {})
-
-    # Auto-assign then apply manual overrides
-    assignments = _auto_assign_formation(formation, players)
     player_by_id = {str(p.get("id")): p for p in players}
-    for i, (slot, auto_player) in enumerate(assignments):
-        override_id = overrides.get(str(i))
-        if override_id and str(override_id) in player_by_id:
-            override_player = player_by_id[str(override_id)]
-            for j, (s2, p2) in enumerate(assignments):
-                if j != i and p2 and str(p2.get("id")) == str(override_id):
-                    assignments[j][1] = None
-            assignments[i][1] = override_player
+
+    # Start with auto assignments
+    assignments = _auto_assign_formation(formation, players)
+
+    # Apply saved overrides (move players to explicit slots)
+    if overrides:
+        # First, remove all override'd players from their auto spots
+        override_ids = {str(v) for v in overrides.values() if v}
+        for i in range(len(assignments)):
+            p = assignments[i][1]
+            if p and str(p.get("id")) in override_ids:
+                assignments[i][1] = None
+        # Now place each override in its slot
+        for slot_idx_str, pid in overrides.items():
+            try:
+                slot_idx = int(slot_idx_str)
+            except ValueError:
+                continue
+            if 0 <= slot_idx < len(assignments):
+                if pid and str(pid) in player_by_id:
+                    assignments[slot_idx][1] = player_by_id[str(pid)]
+                else:
+                    assignments[slot_idx][1] = None
 
     # Starting XI value
     xi_players = [p for _, p in assignments if p]
@@ -1769,77 +1830,91 @@ def tactics_tab(players):
     st.markdown("**Starting XI** — {} players · {} · Avg SofaScore {:.2f}".format(
         len(xi_players), _fmt_m(xi_value), avg_ss
     ))
+    st.caption("🟢 Exact position · 🟡 Similar role · 🔴 Out of position")
 
-    # Render pitch (aligned left) + bench below
+    # Two columns: pitch on left, lineup editor on right
     assigned_ids = {str(p.get("id")) for _, p in assignments if p}
     bench = [p for p in players if str(p.get("id")) not in assigned_ids]
 
-    pitch = _render_pitch(formation, assignments)
-    # Left-align pitch by overriding margin
-    st.markdown(
-        pitch.replace("margin:0 auto;", "margin:0;"),
-        unsafe_allow_html=True,
-    )
+    col_pitch, col_edit = st.columns([2, 1])
 
-    # Bench right below pitch
-    if bench:
-        bench_value = sum(_mv_num(p) for p in bench)
-        st.caption("🪑 **Bench**: {}".format(
-            " · ".join("{} ({})".format(p.get("name", "?"), p.get("position", "?")) for p in bench)
-        ))
-        st.caption("Bench value: {}".format(_fmt_m(bench_value)))
+    with col_pitch:
+        pitch = _render_pitch(formation, assignments)
+        st.markdown(
+            pitch.replace("margin:0 auto;", "margin:0;"),
+            unsafe_allow_html=True,
+        )
 
-    st.caption("🟢 Exact match · 🟡 Same role · 🔴 Out of position")
+    with col_edit:
+        # Disable text input on selectboxes in this column (click-to-select only)
+        st.markdown(
+            """
+            <style>
+            div[class*="st-key-tac_"] input[role="combobox"] {
+                pointer-events: none !important;
+                caret-color: transparent !important;
+            }
+            div[class*="st-key-tac_"] [data-baseweb="select"] > div {
+                cursor: pointer !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    changed = False
-    with st.expander("📋 Edit lineup", expanded=False):
-        for i, (slot, player) in enumerate(assignments):
-            # Build options: current player + all players
-            options = ["— Empty —"] + [
-                "{} ({})".format(p.get("name", "?"), p.get("position", "?"))
-                for p in players
-            ]
-            option_ids = [None] + [str(p.get("id")) for p in players]
+        # Build options sorted by position (GK → DEF → MID → ATT)
+        sorted_players = sorted(
+            players,
+            key=lambda p: (
+                POSITION_ORDER.get(p.get("position", ""), 999),
+                p.get("name", "").lower(),
+            ),
+        )
+        option_ids = [None] + [str(p.get("id")) for p in sorted_players]
+        option_labels = ["— Empty —"] + [
+            "{} {} · {}".format(
+                SHORT_POS.get(p.get("position", ""), "?"),
+                p.get("name", "?"),
+                p.get("club", "?"),
+            )
+            for p in sorted_players
+        ]
+        id_to_label = dict(zip(option_ids, option_labels))
 
-            current_idx = 0
-            if player:
-                pid = str(player.get("id"))
-                if pid in option_ids:
-                    current_idx = option_ids.index(pid)
+        # Iterate in pitch order (top to bottom = attack to GK)
+        indexed = list(enumerate(assignments))
+        indexed.sort(key=lambda x: x[1][0].get("y", 0))
 
-            compat_icon = ""
+        for i, (slot, player) in indexed:
+            current_id = str(player.get("id")) if player else None
+            widget_key = "tac_{}_{}".format(selected, i)
+
+            # Seed widget state to match current assignment (before widget renders)
+            # Streamlit uses session state value if key already exists
+            st.session_state[widget_key] = current_id
+
+            compat_icon = "⚪"
             if player:
                 compat_icon = _COMPAT_ICONS[_slot_compatibility(slot["role"], player.get("position"))]
 
-            col1, col2 = st.columns([1, 3])
-            col1.markdown("**{}** {}".format(slot["slot"], compat_icon))
-            new_idx = col2.selectbox(
-                slot["role"],
-                range(len(options)),
-                index=current_idx,
-                format_func=lambda x: options[x],
-                key="slot_{}_{}".format(selected, i),
-                label_visibility="collapsed",
+            st.selectbox(
+                "{} **{}** {}".format(compat_icon, slot["slot"], slot["role"]),
+                options=option_ids,
+                format_func=lambda x, lbl=id_to_label: lbl.get(x, "— Empty —"),
+                key=widget_key,
+                on_change=_slot_change_callback,
+                args=(selected,),
+                label_visibility="visible",
+                accept_new_options=False,
             )
 
-            new_id = option_ids[new_idx]
-            old_id = str(player.get("id")) if player else None
-            if new_id != old_id:
-                overrides[str(i)] = new_id
-                changed = True
-
-        if changed:
-            if st.button("💾 Save lineup", use_container_width=True, key="save_lineup"):
-                new_overrides = dict(saved_overrides)
-                new_overrides[selected] = overrides
-                _save_user_formation_data(selected, new_overrides)
-                st.success("Lineup saved!")
-                st.rerun()
-
-    # Save formation selection if changed
-    if selected != saved_formation:
-        _save_user_formation_data(selected, saved_overrides)
-        st.rerun()
+    # Bench + legend
+    if bench:
+        bench_value = sum(_mv_num(p) for p in bench)
+        st.caption("🪑 **Bench** ({}): {}".format(
+            _fmt_m(bench_value),
+            " · ".join("{} ({})".format(p.get("name", "?"), SHORT_POS.get(p.get("position", ""), "?")) for p in bench)
+        ))
 
 
 
@@ -2122,8 +2197,11 @@ def saved_teams_tab(players):
         # Top 5 players by market value
         top5 = sorted(snapshot, key=lambda p: _mv_num(p), reverse=True)[:5]
 
+        tid = t.get("id")
+        png_key = "team_png_{}".format(tid)
+
         with st.container(border=True):
-            c_info, c_photos, c_btn = st.columns([3, 4, 1])
+            c_info, c_photos, c_png, c_btn = st.columns([3, 4, 0.8, 0.8])
             with c_info:
                 st.markdown("**🏆 {}**".format(t.get("name", "?")))
                 st.caption("📅 {} · ⚔️ {} · 👥 {}".format(
@@ -2143,11 +2221,49 @@ def saved_teams_tab(players):
                             surname = p.get("name", "?").split()[-1]
                             st.caption("**{}**".format(surname))
                             st.caption(p.get("market_value", ""))
+            with c_png:
+                st.write("")
+                if st.session_state.get(png_key):
+                    st.download_button(
+                        "💾",
+                        data=st.session_state[png_key],
+                        file_name="{}.png".format(t.get("name", "team").replace(" ", "_")),
+                        mime="image/png",
+                        use_container_width=True,
+                        key="dl_{}".format(tid),
+                        help="Download PNG",
+                    )
+                else:
+                    if st.button("🖼️", key="gen_{}".format(tid),
+                                 use_container_width=True, help="Generate PNG"):
+                        with st.spinner("Generating..."):
+                            try:
+                                from pitch_image import render_squad_map_image
+                                stats = "{} players · {} · Avg SofaScore {:.2f}".format(
+                                    len(snapshot),
+                                    _fmt_m(float(t.get("total_value_m") or 0)),
+                                    float(t.get("avg_sofascore") or 0),
+                                )
+                                subtitle = "📅 {} · ⚔️ {}".format(
+                                    created, t.get("formation") or "-"
+                                )
+                                img = render_squad_map_image(
+                                    t.get("name", "Team"),
+                                    snapshot,
+                                    stats_line=stats,
+                                    subtitle=subtitle,
+                                )
+                                buf = io.BytesIO()
+                                img.save(buf, format="PNG", optimize=True)
+                                st.session_state[png_key] = buf.getvalue()
+                                st.rerun()
+                            except Exception as e:
+                                st.error("Failed: {}".format(e))
             with c_btn:
                 st.write("")
-                if st.button("👀", key="view_team_{}".format(t.get("id")),
+                if st.button("👀", key="view_team_{}".format(tid),
                              use_container_width=True, help="View details"):
-                    st.session_state["view_team_id"] = t.get("id")
+                    st.session_state["view_team_id"] = tid
                     st.rerun()
 
 
@@ -2186,12 +2302,72 @@ def squad_map_tab(players):
         age_str = " ~{:.0f}y".format(avg_age) if avg_age else ""
         return "{} {}: {} ({}){}" .format(icon, name, _fmt_m(dept_values[dept]), dept_counts[dept], age_str)
 
-    st.markdown("{} · {} · {} · {}".format(
+    dept_line = "{} · {} · {} · {}".format(
         _dept_str("🧤", "GK", "GK"),
         _dept_str("🛡️", "DEF", "DEF"),
         _dept_str("⚙️", "MID", "MID"),
         _dept_str("⚔️", "ATT", "ATT"),
-    ))
+    )
+    st.markdown(dept_line)
+
+    # Generate & auto-download image button — constrained to pitch width
+    profile = storage.get_profile(_current_user_id())
+    team_name = profile.get("team_name") or "My Football Stars"
+    cached_png = st.session_state.get("squad_map_png")
+
+    # Constrain the button width to match the pitch (max-width 700px, left-aligned)
+    btn_col, _btn_spacer = st.columns([2, 1])
+    with btn_col:
+        if cached_png:
+            st.download_button(
+                "💾 Download image",
+                data=cached_png,
+                file_name="{}_squad_map.png".format(team_name.replace(" ", "_")),
+                mime="image/png",
+                use_container_width=True,
+                key="dl_squad_png_btn",
+            )
+        else:
+            if st.button("🖼️ Generate & download image", use_container_width=True, key="gen_squad_img"):
+                with st.spinner("Generating image..."):
+                    try:
+                        from pitch_image import render_squad_map_image
+                        stats = "{} players · {} · Avg SofaScore {:.2f}".format(
+                            len(players), _fmt_m(total_value), avg_ss
+                        )
+                        plain_dept = dept_line.replace("🧤 ", "").replace("🛡️ ", "").replace("⚙️ ", "").replace("⚔️ ", "")
+                        img = render_squad_map_image(
+                            team_name, players,
+                            stats_line=plain_dept,
+                            subtitle=stats,
+                        )
+                        buf = io.BytesIO()
+                        img.save(buf, format="PNG", optimize=True)
+                        st.session_state["squad_map_png"] = buf.getvalue()
+                        st.session_state["squad_map_png_autotrigger"] = True
+                        st.rerun()
+                    except Exception as e:
+                        st.error("Image generation failed: {}".format(e))
+
+    # Auto-click the download button once after generation
+    if cached_png and st.session_state.pop("squad_map_png_autotrigger", False):
+        import streamlit.components.v1 as _components
+        _components.html(
+            """
+            <script>
+            setTimeout(function() {
+                const btns = window.parent.document.querySelectorAll('button');
+                for (const b of btns) {
+                    if (b.innerText && b.innerText.includes('Download image')) {
+                        b.click();
+                        break;
+                    }
+                }
+            }, 200);
+            </script>
+            """,
+            height=0,
+        )
 
     # Group players by position
     by_position = {}
@@ -2635,6 +2811,106 @@ def impersonate_pin_exit_dialog():
         st.rerun()
 
 
+def global_stats_tab():
+    stats = storage.global_stats()
+    if not stats or "error" in stats:
+        st.error("Could not load stats: {}".format(stats.get("error", "unknown")))
+        return
+
+    import pandas as pd
+
+    # Users
+    st.markdown("### 👥 Users")
+    u1, u2 = st.columns(2)
+    u1.metric("Total users", stats["total_users"])
+    u2.metric("Total players", stats["total_players"])
+
+    # Squads
+    st.markdown("### ⚽ Squads")
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Avg squad", "{:.1f}".format(stats["avg_squad"]))
+    s2.metric("Top squad value", _fmt_m(stats["most_val_user_value"]))
+    s3.metric("🏆 Most valuable", stats["most_val_user_email"])
+
+    st.divider()
+
+    # Leagues & clubs pie charts
+    import altair as alt
+
+    lc1, lc2 = st.columns(2)
+    with lc1:
+        st.markdown("### 🏟️ Leagues")
+        leagues = stats.get("leagues", [])
+        if leagues:
+            df = pd.DataFrame(leagues, columns=["League", "Count"])
+            st.altair_chart(
+                alt.Chart(df).mark_bar().encode(
+                    x=alt.X("Count:Q", scale=alt.Scale(domain=[0, int(df["Count"].max()) + 1]), title="Players"),
+                    y=alt.Y("League:N", sort="-x", title=None),
+                ),
+                use_container_width=True,
+            )
+    with lc2:
+        st.markdown("### 🏢 Clubs")
+        clubs = stats.get("clubs", [])
+        if clubs:
+            df = pd.DataFrame(clubs[:10], columns=["Club", "Count"])
+            st.altair_chart(
+                alt.Chart(df).mark_bar().encode(
+                    x=alt.X("Count:Q", scale=alt.Scale(domain=[0, int(df["Count"].max()) + 1]), title="Players"),
+                    y=alt.Y("Club:N", sort="-x", title=None),
+                ),
+                use_container_width=True,
+            )
+
+    st.divider()
+
+    # Transactions
+    st.markdown("### 📊 Transactions")
+    t1, t2, t3, t4 = st.columns(4)
+    t1.metric("Total", stats["total_txns"])
+    t2.metric("Buys", stats["total_buys"])
+    t3.metric("Sells", stats["total_sells"])
+    t4.metric("Net volume", _fmt_m(stats["total_buys_val"] + stats["total_sells_val"]))
+
+    tv1, tv2 = st.columns(2)
+    tv1.caption("💸 Bought: {}".format(_fmt_m(stats["total_buys_val"])))
+    tv2.caption("💰 Sold: {}".format(_fmt_m(stats["total_sells_val"])))
+
+    if stats.get("biggest_buy"):
+        b = stats["biggest_buy"]
+        st.caption("🔝 Biggest buy: **{}** — {}".format(
+            b.get("player_name", "?"), _fmt_m(float(b.get("deal_value_m") or 0))
+        ))
+    if stats.get("biggest_sell"):
+        b = stats["biggest_sell"]
+        st.caption("🔝 Biggest sell: **{}** — {}".format(
+            b.get("player_name", "?"), _fmt_m(float(b.get("deal_value_m") or 0))
+        ))
+    if stats.get("top_bought"):
+        st.caption("🏆 **Most bought**: " + " · ".join(
+            "{} ({})".format(n, c) for n, c in stats["top_bought"]
+        ))
+
+    st.divider()
+
+    # Saved teams + Searches
+    sc1, sc2 = st.columns(2)
+    with sc1:
+        st.markdown("### 🏆 Saved teams")
+        st.metric("Total", stats["total_saved_teams"])
+        st.caption("Avg per user: {:.1f}".format(stats["avg_saved_per_user"]))
+    with sc2:
+        st.markdown("### 🔎 Searches")
+        st.metric("Total searches", stats.get("total_searches", 0))
+        avg_s = stats.get("total_searches", 0) / stats["total_users"] if stats["total_users"] else 0
+        st.caption("Avg per user: {:.1f}".format(avg_s))
+        if stats.get("top_searchers"):
+            st.caption("Top: " + " · ".join(
+                "{} ({})".format(e, c) for e, c in stats["top_searchers"] if c > 0
+            ))
+
+
 @st.dialog("Manage Users", width="large")
 def manage_users_dialog():
     # Admin-only (defense in depth)
@@ -2648,19 +2924,39 @@ def manage_users_dialog():
         st.info("No users found or function not available.")
         return
 
-    for p in profiles:
+    # Pagination
+    page_size = 10
+    total_pages = max(1, (len(profiles) + page_size - 1) // page_size)
+    page = st.session_state.get("mu_page", 0)
+    if page >= total_pages:
+        page = total_pages - 1
+    start = page * page_size
+    page_profiles = profiles[start:start + page_size]
+
+    st.caption("{} users · Page {}/{}".format(len(profiles), page + 1, total_pages))
+    if total_pages > 1:
+        pc1, pc2, pc3 = st.columns([1, 2, 1])
+        if pc1.button("◀ Prev", disabled=(page == 0), use_container_width=True, key="mu_prev"):
+            st.session_state["mu_page"] = page - 1
+        if pc3.button("Next ▶", disabled=(page >= total_pages - 1), use_container_width=True, key="mu_next"):
+            st.session_state["mu_page"] = page + 1
+
+    for p in page_profiles:
         uid = p.get("user_id", "")
         email = p.get("email", "?")
-        name = p.get("nickname") or "{} {}".format(
-            p.get("first_name", ""), p.get("last_name", "")
-        ).strip() or email
+        # Name priority: nickname > first+last > email
+        nick = p.get("nickname", "")
+        fn = p.get("first_name", "")
+        ln = p.get("last_name", "")
+        full = "{} {}".format(fn, ln).strip()
+        name = nick or full or email
         team = p.get("team_name", "")
         is_adm = p.get("is_admin", False)
         is_prem = p.get("is_premium", False)
 
-        c1, c2, c3, c4, c5 = st.columns([3.5, 1, 1, 0.6, 0.6])
+        c1, c2, c3, c4, c5, c6 = st.columns([3.5, 0.8, 0.8, 0.5, 0.5, 0.5])
         c1.markdown(
-            "**{}** · _{}_ · <small>{}</small>".format(name, team or "no team", email),
+            "**{}** · _{}_ · <small><code>{}</code></small>".format(name, team or "no team", email),
             unsafe_allow_html=True,
         )
         new_admin = c2.checkbox(
@@ -2677,10 +2973,17 @@ def manage_users_dialog():
             st.success("Updated {}".format(name))
             st.rerun()
 
+        # Edit profile button — toggle single editing user
+        if c5.button("✏️", key="btn_edit_u_{}".format(uid), help="Edit profile"):
+            if st.session_state.get("mu_editing_uid") == uid:
+                st.session_state.pop("mu_editing_uid", None)
+            else:
+                st.session_state["mu_editing_uid"] = uid
+
         # Impersonate button
         current_real = st.session_state.get("real_user_id", _current_user_id())
         if uid != current_real:
-            if c5.button("👤", key="imp_{}".format(uid), help="Impersonate " + name):
+            if c6.button("👤", key="imp_{}".format(uid), help="Impersonate " + name):
                 # Check if admin already has a PIN
                 real_profile = storage.get_profile(current_real)
                 saved_pin = real_profile.get("admin_pin", "")
@@ -2705,6 +3008,36 @@ def manage_users_dialog():
                         "name": name,
                     }
                     st.rerun()
+
+    # Inline edit form for the selected user (rendered outside the loop, no rerun needed)
+    edit_uid = st.session_state.get("mu_editing_uid")
+    if edit_uid:
+        ep = next((x for x in profiles if x.get("user_id") == edit_uid), None)
+        if ep:
+            st.divider()
+            st.markdown("**Editing: {}**".format(
+                ep.get("nickname") or "{} {}".format(ep.get("first_name", ""), ep.get("last_name", "")).strip() or ep.get("email", "?")
+            ))
+            ec1, ec2 = st.columns(2)
+            new_fn = ec1.text_input("First name", value=ep.get("first_name", ""), key="efn")
+            new_ln = ec2.text_input("Last name", value=ep.get("last_name", ""), key="eln")
+            ec3, ec4 = st.columns(2)
+            new_nick = ec3.text_input("Nickname", value=ep.get("nickname", ""), key="enk")
+            new_team = ec4.text_input("Team name", value=ep.get("team_name", ""), key="etm")
+            sc1, sc2 = st.columns(2)
+            if sc1.button("💾 Save profile", use_container_width=True, key="save_edit_prof"):
+                storage.admin_update_profile(edit_uid, {
+                    "first_name": new_fn.strip(),
+                    "last_name": new_ln.strip(),
+                    "nickname": new_nick.strip(),
+                    "team_name": new_team.strip(),
+                })
+                st.session_state.pop("mu_editing_uid", None)
+                st.success("Updated!")
+                st.rerun()
+            if sc2.button("Cancel", use_container_width=True, key="cancel_edit_prof"):
+                st.session_state.pop("mu_editing_uid", None)
+                st.rerun()
 
 
 @st.dialog("Danger Zone")
@@ -2794,10 +3127,14 @@ def main():
         unsafe_allow_html=True,
     )
 
-    # Determine admin based on REAL user (not impersonated identity)
+    # Admin rights are based on the currently-acting user (impersonated or real).
+    # This means if an admin impersonates a non-admin, admin menu items disappear.
     real_uid = st.session_state.get("real_user_id") or _current_user_id()
-    user_is_admin = storage.is_admin(real_uid)
     impersonating = bool(st.session_state.get("real_user_id"))
+    # real_is_admin: needed to decide whether to show the "Exit impersonation" banner
+    real_is_admin = storage.is_admin(real_uid)
+    # user_is_admin: controls menu visibility based on CURRENT (possibly impersonated) user
+    user_is_admin = storage.is_admin(_current_user_id())
 
     # Load profile of the currently-acting user (impersonated or real)
     profile = storage.get_profile(_current_user_id())
@@ -2930,7 +3267,6 @@ def main():
             role = _ROLE_MAP.get(p.get("position", ""), "")
             if role:
                 counts[role] += 1
-        avg_rating = sum(p.get("rating", 0) for p in players) / len(players)
         ss_players = [p for p in players if p.get("sofascore_rating")]
         avg_ss = (
             sum(float(p["sofascore_rating"]) for p in ss_players) / len(ss_players)
@@ -2938,26 +3274,25 @@ def main():
         )
         age_players = [p for p in players if p.get("age")]
         avg_age = sum(p["age"] for p in age_players) / len(age_players) if age_players else 0
-        m1, m2, m3, m4, m5, m6, m7, m8 = st.columns(8)
+        m1, m2, m3, m4, m5, m6, m7 = st.columns(7)
         m1.metric("Players", "{}/{}".format(len(players), _max_squad()))
         m2.metric("GK", counts["GK"])
         m3.metric("DEF", counts["DEF"])
         m4.metric("MID", counts["MID"])
         m5.metric("ATT", counts["ATT"])
         m6.metric("Avg Age", "{:.1f}".format(avg_age) if avg_age else "-")
-        m7.metric("Avg Rating", "{:.0f}/100".format(avg_rating))
-        m8.metric("📈 Avg SofaScore", "{:.2f}".format(avg_ss) if avg_ss else "-")
+        m7.metric("📈 Avg SofaScore", "{:.2f}".format(avg_ss) if avg_ss else "-")
 
     st.divider()
 
     # --- Tabs (persist selection via query params) ---
     user_premium = storage.is_premium(_current_user_id()) or user_is_admin
     if user_premium:
-        _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "🏆 Teams", "📊 Transactions", "📋 Analysis", "🤖 Ask Claude", "💬 Ask ChatGPT", "📝 Notes"]
-        _TAB_KEYS = ["squad", "map", "tactics", "teams", "transactions", "analysis", "ask", "chatgpt", "notes"]
+        _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "🏆 Teams", "📊 Transactions", "📋 Analysis", "🤖 Ask Claude", "💬 Ask ChatGPT", "📊 Stats"]
+        _TAB_KEYS = ["squad", "map", "tactics", "teams", "transactions", "analysis", "ask", "chatgpt", "stats"]
     else:
-        _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "🏆 Teams", "📊 Transactions", "📋 Analysis", "💬 Ask ChatGPT", "📝 Notes"]
-        _TAB_KEYS = ["squad", "map", "tactics", "teams", "transactions", "analysis", "chatgpt", "notes"]
+        _TAB_NAMES = ["⚽ Squad", "🗺️ Map", "⚔️ Tactics", "🏆 Teams", "📊 Transactions", "📋 Analysis", "💬 Ask ChatGPT", "📊 Stats"]
+        _TAB_KEYS = ["squad", "map", "tactics", "teams", "transactions", "analysis", "chatgpt", "stats"]
 
     # Inject JS to track tab clicks and update URL query param
     import streamlit.components.v1 as _components
@@ -3010,7 +3345,7 @@ def main():
     tab_report = tab_idx["analysis"]
     tab_ask = tab_idx.get("ask")
     tab_gpt = tab_idx["chatgpt"]
-    tab_notes = tab_idx["notes"]
+    tab_stats = tab_idx["stats"]
 
     # Handle refresh all from menu (dialog)
     if st.session_state.pop("do_refresh_all", False):
@@ -3115,8 +3450,8 @@ def main():
     with tab_gpt:
         chatgpt_tab(players)
 
-    with tab_notes:
-        notes_tab()
+    with tab_stats:
+        global_stats_tab()
 
     # --- Dialogs ---
     if st.session_state.get("selling_id") is not None:
@@ -3143,6 +3478,7 @@ def main():
 
     if st.session_state.pop("show_users_dialog", False):
         manage_users_dialog()
+
 
     if st.session_state.pop("show_pin_dialog", False):
         change_pin_dialog()
