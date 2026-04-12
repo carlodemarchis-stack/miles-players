@@ -273,7 +273,10 @@ def _migrate_purchase_prices(players, settings):
 def init_state():
     if "players" not in st.session_state:
         # Track activity once per session
-        storage.touch_last_active(_current_user_id())
+        try:
+            storage.touch_last_active(_current_user_id())
+        except Exception:
+            pass
         players = load_players()
         settings = load_settings()
         _migrate_ratings_if_needed(players, settings)
