@@ -2817,11 +2817,73 @@ def impersonate_pin_setup_dialog():
 def impersonate_pin_exit_dialog():
     st.markdown("Enter the 4-digit PIN to exit impersonation.")
     st.caption("Forgot the PIN? Close this browser tab to reset.")
-    pin = st.text_input("PIN", type="password", max_chars=4, key="imp_pin_exit")
+
+    # 4 separate digit boxes
+    d1, d2, d3, d4 = st.columns(4)
+    p1 = d1.text_input("", max_chars=1, key="pin_d1", label_visibility="collapsed")
+    p2 = d2.text_input("", max_chars=1, key="pin_d2", label_visibility="collapsed")
+    p3 = d3.text_input("", max_chars=1, key="pin_d3", label_visibility="collapsed")
+    p4 = d4.text_input("", max_chars=1, key="pin_d4", label_visibility="collapsed")
+
+    # Style: square boxes
+    st.markdown(
+        """
+        <style>
+        div[class*="st-key-pin_d"] input {
+            text-align: center !important;
+            font-size: 2rem !important;
+            font-weight: 700 !important;
+            padding: 8px !important;
+            width: 60px !important;
+            height: 60px !important;
+            border-radius: 12px !important;
+            -webkit-text-security: disc;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Auto-advance JS via components.html (st.markdown strips scripts)
+    import streamlit.components.v1 as _pin_components
+    _pin_components.html(
+        """
+        <script>
+        (function() {
+            setTimeout(function() {
+                const inputs = window.parent.document.querySelectorAll(
+                    'div[class*="st-key-pin_d"] input'
+                );
+                inputs.forEach(function(inp, idx) {
+                    inp.addEventListener('input', function() {
+                        if (inp.value.length >= 1) {
+                            if (idx < inputs.length - 1) {
+                                inputs[idx + 1].focus();
+                            } else {
+                                inp.blur();
+                            }
+                        }
+                    });
+                    inp.addEventListener('keydown', function(e) {
+                        if (e.key === 'Backspace' && inp.value === '' && idx > 0) {
+                            inputs[idx - 1].focus();
+                        }
+                    });
+                });
+                if (inputs.length > 0) inputs[0].focus();
+            }, 500);
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+    pin = "{}{}{}{}".format(p1, p2, p3, p4)
+    all_filled = len(pin) == 4 and pin.isdigit()
+
     c1, c2 = st.columns(2)
-    if c1.button("✅ Exit", use_container_width=True, disabled=not pin):
+    if c1.button("✅ Exit", use_container_width=True, disabled=not all_filled):
         if pin == st.session_state.get("impersonate_pin"):
-            # Revert
             real_uid = st.session_state.get("real_user_id")
             real_email = st.session_state.get("real_user_email", "")
             real_profile = storage.get_profile(real_uid)
@@ -2937,7 +2999,7 @@ _TOUR_STEPS = [
 
 
 def _show_tour():
-    """Render the current tour step."""
+    """Render the current tour step as a styled card."""
     step = st.session_state.get("tour_step", 0)
     if step < 0 or step >= len(_TOUR_STEPS):
         st.session_state.pop("tour_active", None)
@@ -2945,33 +3007,60 @@ def _show_tour():
         return
 
     s = _TOUR_STEPS[step]
-    with st.container(border=True):
-        st.markdown("### {} {}".format(s["icon"], s["title"]))
-        st.markdown(s["text"])
-        st.caption("Step {} of {}".format(step + 1, len(_TOUR_STEPS)))
+    total = len(_TOUR_STEPS)
 
-        c1, c2, c3 = st.columns([1, 1, 1])
-        if step > 0:
-            if c1.button("◀ Back", use_container_width=True, key="tour_back"):
-                st.session_state["tour_step"] = step - 1
-                st.rerun()
-
-        if step < len(_TOUR_STEPS) - 1:
-            if c2.button("Next ▶", use_container_width=True, key="tour_next"):
-                st.session_state["tour_step"] = step + 1
-                st.rerun()
+    # Progress dots
+    dots = ""
+    for i in range(total):
+        if i == step:
+            dots += "⬤ "
         else:
-            if c2.button("✅ Got it!", use_container_width=True, key="tour_done"):
-                st.session_state.pop("tour_active", None)
-                st.session_state.pop("tour_step", None)
-                # Mark as seen in profile
-                try:
-                    storage.update_profile(_current_user_id(), {"tour_seen": "1"})
-                except Exception:
-                    pass
-                st.rerun()
+            dots += "○ "
 
-        if c3.button("Skip tour", use_container_width=True, key="tour_skip"):
+    # Render as a styled HTML card for visual impact
+    st.markdown(
+        """
+        <div style="
+            background: linear-gradient(135deg, rgba(255,215,0,0.08) 0%, rgba(255,215,0,0.02) 100%);
+            border: 1px solid rgba(255,215,0,0.25);
+            border-radius: 16px;
+            padding: 28px 32px 20px;
+            margin-bottom: 16px;
+            animation: tourFadeIn 0.4s ease-out;
+        ">
+            <div style="font-size: 2.5rem; margin-bottom: 8px;">{icon}</div>
+            <div style="font-size: 1.5rem; font-weight: 700; color: #FFD700; margin-bottom: 12px;">{title}</div>
+            <div style="font-size: 1rem; color: #ddd; line-height: 1.7;">{text}</div>
+            <div style="margin-top: 16px; color: #888; font-size: 0.8rem; letter-spacing: 2px;">{dots}</div>
+        </div>
+        <style>
+        @keyframes tourFadeIn {{
+            from {{ opacity: 0; transform: translateY(-10px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+        </style>
+        """.format(
+            icon=s["icon"],
+            title=s["title"].replace(s["icon"], "").strip(),
+            text=s["text"].replace("\n\n", "<br><br>").replace("**", ""),
+            dots=dots,
+        ),
+        unsafe_allow_html=True,
+    )
+
+    # Navigation buttons
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+    if step > 0:
+        if c1.button("◀ Back", use_container_width=True, key="tour_back"):
+            st.session_state["tour_step"] = step - 1
+            st.rerun()
+
+    if step < total - 1:
+        if c3.button("Next ▶", use_container_width=True, key="tour_next"):
+            st.session_state["tour_step"] = step + 1
+            st.rerun()
+    else:
+        if c3.button("🚀 Let's go!", use_container_width=True, key="tour_done"):
             st.session_state.pop("tour_active", None)
             st.session_state.pop("tour_step", None)
             try:
@@ -2979,6 +3068,15 @@ def _show_tour():
             except Exception:
                 pass
             st.rerun()
+
+    if c4.button("Skip", use_container_width=True, key="tour_skip"):
+        st.session_state.pop("tour_active", None)
+        st.session_state.pop("tour_step", None)
+        try:
+            storage.update_profile(_current_user_id(), {"tour_seen": "1"})
+        except Exception:
+            pass
+        st.rerun()
 
 
 def global_stats_tab():
